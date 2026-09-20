@@ -1,0 +1,6 @@
+﻿.env.dev
+.env.prod
+cloned_repo/
+.venv/
+__pycache__/
+*.pyc

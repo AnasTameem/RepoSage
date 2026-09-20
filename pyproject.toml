@@ -1,0 +1,26 @@
+[project]
+name = "rag-project"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.141.1",
+    "flagembedding>=1.4.2",
+    "httpx>=0.28.1",
+    "openai>=3.3.0",
+    "pydantic>=2.13.5",
+    "pymupdf>=1.28.2",
+    "pypdf>=6.19.0",
+    "ragas>=0.4.3",
+    "requests>=2.34.2",
+    "tenacity>=9.1.4",
+    "uvicorn[standard]>=0.53.0",
+    "weaviate-client>=4.23.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.8",
+]
