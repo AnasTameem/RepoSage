@@ -15,6 +15,7 @@ dependencies = [
     "ragas>=0.4.3",
     "requests>=2.34.2",
     "tenacity>=9.1.4",
+    "tree-sitter-language-pack>=1.20.0",
     "uvicorn[standard]>=0.53.0",
     "weaviate-client>=4.23.1",
 ]
