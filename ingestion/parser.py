@@ -28,7 +28,8 @@ class TreeNode:
     source: str
     decorators: list[dict] = field(default_factory=list)
     children: list["TreeNode"] = field(default_factory=list)
-    bound_names: list[str] = field(default_factory=list)
+    import_bindings: list[dict] = field(default_factory=list)
+    docstring: str | None = None
 
 
 def make_node_id(file_path: str, start_line: int, name: str) -> str:
@@ -71,7 +72,7 @@ def build_tree(file_path: Path, repo_root: Path, lang: str) -> TreeNode:
                     start_line=child.start_point[0] + 1,
                     end_line=child.end_point[0] + 1,
                     source=source_bytes[child.start_byte:child.end_byte].decode("utf-8", errors="ignore"),
-                    bound_names=[name for name, _ in bindings],
+                    import_bindings=[{"name": n, "target": t} for n, t in bindings],
                 ))
 
             elif child.type == "assignment" and parent is root:
@@ -125,8 +126,29 @@ def _make_definition_node(node, source_bytes: bytes, relative_path: str, skip_ra
         end_line=node.end_point[0] + 1,
         source=source_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="ignore"),
         decorators=decorators,
+        docstring=_extract_docstring(target, source_bytes),
     )
     return tree_node, skip_ranges
+
+
+def _extract_docstring(def_node, source_bytes: bytes) -> str | None:
+    """Returns a function/class's docstring text (quotes stripped), or None
+    if the first statement in its body is not a string literal."""
+    body = def_node.child_by_field_name("body")
+    if body is None or not body.children:
+        return None
+    first_stmt = body.children[0]
+    if first_stmt.type != "expression_statement":
+        return None
+    string_node = next((c for c in first_stmt.children if c.type == "string"), None)
+    if string_node is None:
+        return None
+    raw = source_bytes[string_node.start_byte:string_node.end_byte].decode("utf-8", errors="ignore")
+    for quote in ('"""', "'''", '"', "'"):
+        if raw.startswith(quote) and raw.endswith(quote) and len(raw) >= 2 * len(quote):
+            raw = raw[len(quote):-len(quote)]
+            break
+    return raw.strip() or None
 
 
 def _extract_decorators(decorated_node, source_bytes: bytes) -> list[dict]:
@@ -240,39 +262,73 @@ def flatten_tree(node: TreeNode):
 
 
 def build_symbol_index(trees: dict) -> dict:
-    index = {}
+    index: dict = {}
     for tree in trees.values():
         for node in flatten_tree(tree):
             if node.node_type not in {"module", "global_bucket"} and node.name != "<anonymous>":
-                index.setdefault(node.name, node.node_id)
+                index.setdefault(node.name, []).append(node.node_id)
     return index
 
 
-def get_local_import_names(tree: TreeNode) -> set:
-    names = set()
+def get_local_import_bindings(tree: TreeNode) -> dict:
+    bindings = {}
     globals_bucket = next((c for c in tree.children if c.node_type == "global_bucket"), None)
     if globals_bucket is None:
-        return names
+        return bindings
     for node in globals_bucket.children:
         if node.node_type in IMPORT_TYPES:
-            names.update(node.bound_names)
-    return names
+            for b in node.import_bindings:
+                bindings[b["name"]] = b["target"]
+    return bindings
+
+
+def build_module_index(trees: dict) -> dict:
+    """dotted module path -> relative file path, saare parsed files se."""
+    index = {}
+    for relative_path in trees.keys():
+        parts = relative_path.replace("\\", "/").split("/")
+        if not parts[-1].endswith(".py"):
+            continue
+        if parts[-1] == "__init__.py":
+            parts = parts[:-1]
+        else:
+            parts[-1] = parts[-1][:-3]
+        if not parts:
+            continue
+        index[".".join(parts)] = relative_path
+    return index
 
 
 def resolve_decorators(trees: dict) -> None:
     symbol_index = build_symbol_index(trees)
+    module_index = build_module_index(trees)
     for tree in trees.values():
-        local_imports = get_local_import_names(tree)
+        import_bindings = get_local_import_bindings(tree)
         for node in flatten_tree(tree):
             for dec in node.decorators:
-                dec["resolves_to"] = _classify_decorator(dec["root_name"], local_imports, symbol_index)
+                dec["resolves_to"] = _classify_decorator(dec["root_name"], import_bindings, module_index, symbol_index)
 
 
-def _classify_decorator(root_name, local_imports: set, symbol_index: dict) -> dict:
+def _classify_decorator(root_name, import_bindings: dict, module_index: dict, symbol_index: dict) -> dict:
+    if root_name is None:
+        return {"kind": "unresolved", "target": None}
+
     if root_name in PYTHON_BUILTIN_DECORATORS:
         return {"kind": "builtin", "target": None}
-    if root_name in symbol_index:
-        return {"kind": "local_symbol", "target": symbol_index[root_name]}
-    if root_name in local_imports:
-        return {"kind": "import", "target": root_name}
+
+    if root_name in import_bindings:
+        dotted_target = import_bindings[root_name]
+        parts = dotted_target.split(".")
+        for i in range(len(parts), 0, -1):
+            candidate = ".".join(parts[:i])
+            if candidate in module_index:
+                return {"kind": "internal_import", "target": module_index[candidate]}
+        return {"kind": "external_import", "target": dotted_target}
+
+    matches = symbol_index.get(root_name)
+    if matches:
+        if len(matches) == 1:
+            return {"kind": "local_symbol", "target": matches[0]}
+        return {"kind": "ambiguous_local_symbol", "target": matches}
+
     return {"kind": "unresolved", "target": None}
