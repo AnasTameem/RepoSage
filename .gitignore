@@ -7,3 +7,6 @@ __pycache__/
 chunks_output.json
 chunks_output1.json
 chunks_output2.json
+test.py 
+chunker_test.py
+chunking_report.txt
