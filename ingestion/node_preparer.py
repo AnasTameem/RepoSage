@@ -1,10 +1,14 @@
 import os
+import sys
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 import tree_sitter_python as tspython
 from tree_sitter import Language, Parser, Node
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from config import REPO_DIR
+from tree_sitter import Language, Parser, Node
 # -------------------------------------------------------------------
 # Data Structures: AST Node & Rich Payload Output
 # -------------------------------------------------------------------
@@ -33,11 +37,11 @@ class RichNodePayload:
 # Stage 2 Payload Generator Implementation
 # -------------------------------------------------------------------
 
-class ProdinitStage2Preparer:
-    def __init__(self, repo_dir: str = "../cloned-repo"):
+class NodePreparer:
+    def __init__(self, repo_dir: Path = REPO_DIR):
         self.PY_LANGUAGE = Language(tspython.language())
         self.parser = Parser(self.PY_LANGUAGE)
-        self.repo_dir = Path(repo_dir).resolve()
+        self.repo_dir = repo_dir.resolve()
         self.nodes: Dict[str, CodeNode] = {}
 
     def process_repository(self) -> List[RichNodePayload]:
@@ -226,7 +230,7 @@ class ProdinitStage2Preparer:
 # Test Execution
 # -------------------------------------------------------------------
 if __name__ == "__main__":
-    preparer = ProdinitStage2Preparer(repo_dir="../cloned-repo")
+    preparer = NodePreparer(repo_dir=REPO_DIR)
     payloads = preparer.process_repository()
 
     print("=" * 70)
