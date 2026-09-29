@@ -78,9 +78,9 @@ if __name__ == "__main__":
         embedder = VoyageBatchEmbedder()
         records = embedder.generate_embeddings(payloads)
 
-        if records:
-            sample = records[0]
-            print("\n--- SAMPLE RECORD ---")
-            print(f"Node ID          : {sample['node_id']}")
-            print(f"Vector Dimensions: {len(sample['vector'])}")
-            print(f"Sample Vector    : {sample['vector'][:5]}...")
+        # if records:
+        #     sample = records[0]
+        #     print("\n--- SAMPLE RECORD ---")
+        #     print(f"Node ID          : {sample['node_id']}")
+        #     print(f"Vector Dimensions: {len(sample['vector'])}")
+        #     print(f"Sample Vector    : {sample['vector'][:5]}...")

@@ -10,3 +10,9 @@ chunks_output2.json
 test.py 
 chunker_test.py
 chunking_report.txt
+test_connections.py
+test_qdrant.py
+debug_neo4j.py
+neo_creds.txt
+neo4j_creds1.txt
+neo4j_creds2.txt

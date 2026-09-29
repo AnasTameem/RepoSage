@@ -238,13 +238,13 @@ if __name__ == "__main__":
     print("=" * 70)
     print(f"Total Embeddable Node Payloads Prepared: {len(payloads)}\n")
 
-    # # Display 3 sample formatted payloads
-    # sample_size = min(3, len(payloads))
-    # print(f"--- DISPLAYING {sample_size} SAMPLE FORMATTED RICH PAYLOADS ---")
+    # Display 3 sample formatted payloads
+    sample_size = min(3, len(payloads))
+    print(f"--- DISPLAYING {sample_size} SAMPLE FORMATTED RICH PAYLOADS ---")
     
-    # for i, payload in enumerate(payloads[:sample_size], 1):
-    #     print(f"\n==================== PAYLOAD #{i} ====================")
-    #     print(payload.formatted_payload)
-    #     print("-----------------------------------------------------")
-    #     print("Associated Metadata (for Vector Store / DB Indexing):")
-    #     print(payload.metadata)
+    for i, payload in enumerate(payloads[:sample_size], 1):
+        print(f"\n==================== PAYLOAD #{i} ====================")
+        print(payload.formatted_payload)
+        print("-----------------------------------------------------")
+        print("Associated Metadata (for Vector Store / DB Indexing):")
+        print(payload.metadata)
