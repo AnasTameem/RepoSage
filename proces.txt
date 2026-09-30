@@ -1,0 +1,52 @@
+before genrating the embeddings and assigning the noes into db, this will be the process we will follow exactly, and the source code will not be converted into the embedding, it will be stored with the metadata 
+follow this guideline for generating the insertion pipeline
+Step 1: Calculate the SHA256 ID
+- Action: Generate the unique SHA256 hash from your raw incoming data payload.
+- Execution: Keep this step synchronous. Hash generation is a CPU-bound operation that executes near-instantly in memory. Trying to run it asynchronously adds unnecessary context-switching overhead.
+- Outcome: You now have a deterministic ID that ties your data across both databases before any network requests begin.
+
+Step 2: Split the Workflow Into Two Concurrent Branches
+Because the ID is already calculated, your Graph Database write is no longer dependent on the outcome of the Vector Database write. You can now duplicate the execution path:
+- Branch A: Responsible only for the Graph Database insertion.
+- Branch B: Responsible only for fetching the embedding and writing to the Vector Database.
+
+Step 3: Execute Branch A (Graph Node Insertion)
+- Action: Pass the ID and the raw data payload to your asynchronous Graph Database client driver.
+- Execution: Trigger this task immediately without waiting for it to finish. The client will open a non-blocking network socket connection to the Graph Database cluster.
+
+Step 4: Execute Branch B (Embedding & Vector Storage)
+This branch contains two inner dependencies that must run sequentially within its own isolated path:
+1. API Call: Fire an asynchronous HTTP/gRPC request to the embedding model provider (e.g., OpenAI, Cohere, local Ollama). The event loop yields control while waiting for the network packets to return, allowing other tasks to run.
+2. Vector DB Insertion: Once the API returns the multi-dimensional vector array, pair it with the original ID and metadata, then fire an asynchronous write request to the Vector Database.
+
+Step 5: Coordinate and Await Joint Completion
+- Action: Use an asynchronous task coordinator (like asyncio.gather in Python or Promise.all in JavaScript) to track both Branch A and Branch B.
+- Execution: The runtime engine executes both branches concurrently. The overall step transitions from a sequential bottleneck to a race where the total time taken is determined solely by whichever branch takes the longest (typically the external Embedding API).
+- Outcome: The pipeline marks the ingestion transaction as fully complete only when both databases acknowledge successful storage.
+Concurrency Control (Semaphores): If you are processing thousands of rows, you must use a concurrency limiter. Without it, you will open thousands of simultaneous outbound connections, crashing your database connection pools or hitting API rate limits instantly.
+Atomic Rollbacks or Dead-Letter Queues: If Branch A succeeds but Branch B fails (e.g., due to an unexpected Vector DB timeout), your system enters an inconsistent state. 
+to handle this last problem follow this guideline
+- Action: Generate your SHA256 ID as before, then initialize both the Graph insertion task and the Vector pipeline task (Embedding API call + Vector DB insertion).
+- Execution: Do not wait for them one by one. Fire them concurrently so they execute in parallel, minimizing network latency overhead.
+
+Step 2: Use a "Fail-Fast" Awaiter
+- Action: Instead of waiting for all tasks to finish regardless of errors, wrap your execution in a coordinator configured to abort immediately if any task raises an exception (e.g., setting return_exceptions=False in Python's asyncio.gather or using Promise.all in JavaScript).
+- Execution: The application blocks moving forward to the next data record until this joint operation resolves. If both succeed, your process advances safely.
+
+Step 3: Intercept Failures & Determine the Culprit
+If an error occurs during Step 2, the execution breaks immediately and enters an exception handler. You must programmatically determine which step failed to decide your rollback strategy:
+- Scenario A: The Embedding API or Vector DB failed, but Graph DB succeeded.
+  - The Problem: An orphaned node now exists in your Graph Database with no corresponding vector representation.
+- Scenario B: Graph DB failed, but Vector DB succeeded.
+  - The Problem: An orphaned vector embedding now exists in your Vector Database with no matching structural node.
+- Scenario C: Both failed or the API failed before any DB write.
+  - The Problem: No data was written; no manual rollback is needed.
+
+Step 4: Execute an Asynchronous Compensating Transaction (Rollback)
+Because these databases cannot automatically roll back together, your application must issue a explicit delete request to clean up the data.
+- Action: In your exception block, if Scenario A is true, trigger an asynchronous DELETE command to the Graph Database matching that specific SHA256 ID. If Scenario B is true, trigger an asynchronous DELETE command to the Vector Database for that ID.
+- Execution: Await this cleanup operation completely before allowing the primary application loop to crash, log the error, or move to a dead-letter queue.
+
+Step 5: Stop the Pipeline Process
+- Action: Once the rollback cleanup completes, raise the exception up the chain or halt your iteration loop.
+- Execution: This fulfills your requirement: the application strictly refuses to proceed to the next record, ensuring zero mismatched or partial states remain in your production environment.
