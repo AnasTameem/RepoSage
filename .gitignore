@@ -23,3 +23,5 @@ missing_check.py
 file_node_check.py
 data_integ.py
 remaining_ingest.py
+embed_store.py
+ingester.py
