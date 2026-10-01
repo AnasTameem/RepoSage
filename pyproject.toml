@@ -5,18 +5,22 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "asyncio>=4.0.0",
     "fastapi>=0.141.1",
     "flagembedding>=1.4.2",
     "httpx>=0.28.1",
+    "neo4j>=6.3.1",
     "openai>=3.3.0",
     "pydantic>=2.13.5",
     "pymupdf>=1.28.2",
     "pypdf>=6.19.0",
+    "qdrant-client>=1.19.1",
     "ragas>=0.4.3",
     "requests>=2.34.2",
     "tenacity>=9.1.4",
     "tree-sitter-language-pack>=1.20.0",
     "uvicorn[standard]>=0.53.0",
+    "voyageai>=0.5.0",
     "weaviate-client>=4.23.1",
 ]
 
