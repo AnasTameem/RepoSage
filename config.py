@@ -6,7 +6,7 @@ load_dotenv()
 
 # --- Root & Repo Paths ---
 BASE_DIR = Path(__file__).resolve().parent
-REPO_DIR = BASE_DIR / "cloned-repo"
+REPO_DIR = BASE_DIR / "cloned_repo"
 
 # --- Embedding Model Settings ---
 EMBEDDING_MODEL_NAME = "voyage-code-3"
@@ -39,3 +39,7 @@ NEO4J_URI = _neo4j_env("NEO4J_URI")
 NEO4J_USER = _neo4j_env("NEO4J_USERNAME") or _neo4j_env("NEO4J_USER")
 NEO4J_PASSWORD = _neo4j_env("NEO4J_PASSWORD")
 NEO4J_DATABASE = _neo4j_env("NEO4J_DATABASE", "neo4j")
+# --- Cloudflare Workers AI (Code Summarizer LLM) ---
+CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "")
+CF_API_TOKEN  = os.getenv("CF_API_TOKEN", "")
+CF_LLM_MODEL  = "@cf/meta/llama-3.2-3b-instruct"
