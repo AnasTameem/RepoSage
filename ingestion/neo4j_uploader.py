@@ -1,381 +1,310 @@
-import os
+﻿import os
 import logging
 import asyncio
-from typing import Dict, List, Any
-from neo4j import GraphDatabase, AsyncGraphDatabase, Driver, AsyncDriver
+from typing import Dict, Any
+from neo4j import AsyncGraphDatabase, AsyncDriver
 
 try:
-    from config import NEO4J_URI as CONFIG_NEO4J_URI, NEO4J_USER as CONFIG_NEO4J_USER, NEO4J_PASSWORD as CONFIG_NEO4J_PASSWORD, NEO4J_DATABASE as CONFIG_NEO4J_DATABASE
+    from config import (
+        NEO4J_URI      as CFG_URI,
+        NEO4J_USER     as CFG_USER,
+        NEO4J_PASSWORD as CFG_PASSWORD,
+        NEO4J_DATABASE as CFG_DATABASE,
+    )
 except ImportError:
-    CONFIG_NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-    CONFIG_NEO4J_USER = os.getenv("NEO4J_USERNAME", "neo4j")
-    CONFIG_NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
-    CONFIG_NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
+    CFG_URI      = os.getenv("NEO4J_URI",      "bolt://localhost:7687")
+    CFG_USER     = os.getenv("NEO4J_USERNAME", "neo4j")
+    CFG_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
+    CFG_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
 
 logger = logging.getLogger(__name__)
 
-class AsyncNeo4jCodebaseUploader:
+
+def _build_file_import_map(files: list) -> Dict[str, Dict[str, str]]:
     """
-    Asynchronous uploader for Neo4j using AsyncGraphDatabase.
-    Enables concurrent graph uploads while embedding API calls are awaiting in background.
+    Build a per-file import resolution map.
+
+    Returns:
+        { file_path -> { imported_name_or_alias -> fully_qualified_target_fqn } }
+
+    Example:
+        agent/graph_rag.py has:  from agent.tools import search_web
+        Result: { "agent/graph_rag.py": { "search_web": "agent.tools.search_web" } }
+
+    This lets us resolve a call like search_web() in graph_rag.py
+    unambiguously to agent.tools.search_web instead of guessing by name.
     """
-    def __init__(self, uri: str = None, user: str = None, password: str = None, database: str = None):
-        self.uri = uri or CONFIG_NEO4J_URI
-        self.user = user or CONFIG_NEO4J_USER
-        self.password = password or CONFIG_NEO4J_PASSWORD
-        self.database = database or CONFIG_NEO4J_DATABASE
+    import_map: Dict[str, Dict[str, str]] = {}
+    for file_rec in files:
+        fpath = file_rec.get("file_path", "")
+        mapping: Dict[str, str] = {}
+        for imp in file_rec.get("global_imports", []):
+            if imp.get("type") == "import_from":
+                module = imp.get("module", "")
+                name   = imp.get("name", "")
+                alias  = imp.get("alias") or name   # use alias if present, else original name
+                # The FQN as stored in the id_map: module.name
+                mapping[alias] = f"{module}.{name}"
+            elif imp.get("type") == "import":
+                name  = imp.get("name", "")
+                alias = imp.get("alias") or name
+                # Top-level import: the symbol IS the module name
+                mapping[alias] = name
+        import_map[fpath] = mapping
+    return import_map
+
+
+class Neo4jUploader:
+    """
+    Lightweight Neo4j uploader.
+
+    Node properties (minimal):
+      File     : id, name, file_path
+      Class    : id, name, file_path
+      Function : id, name, file_path, belongs_to_class
+
+    The `id` is a UUID5 string — identical to the Qdrant point ID for the
+    same code entity, enabling cross-database joins.
+
+    Relationships built in a separate bulk phase after all nodes exist:
+      (:File)-[:CONTAINS]->(:Class)
+      (:File)-[:CONTAINS]->(:Function)       top-level functions only
+      (:Class)-[:CONTAINS]->(:Function)      methods
+      (:Class)-[:INHERITS_FROM]->(:Class)
+      (:Function)-[:CALLS]->(:Function)      import-aware disambiguation
+    """
+
+    def __init__(self, uri=None, user=None, password=None, database=None):
+        self.uri      = uri      or CFG_URI
+        self.user     = user     or CFG_USER
+        self.password = password or CFG_PASSWORD
+        self.database = database or CFG_DATABASE
         self.driver: AsyncDriver = None
 
     async def connect(self):
         if not self.driver:
             self.driver = AsyncGraphDatabase.driver(self.uri, auth=(self.user, self.password))
-            logger.info(f"Connected Async Neo4j driver at {self.uri}")
+            logger.info(f"[Neo4j] Connected at {self.uri}")
 
     async def close(self):
         if self.driver:
             await self.driver.close()
             self.driver = None
 
+    # ------------------------------------------------------------------
+    # Schema
+    # ------------------------------------------------------------------
     async def setup_schema(self):
-        """Creates indexes and uniqueness constraints asynchronously."""
         constraints = [
-            "CREATE CONSTRAINT file_id IF NOT EXISTS FOR (f:File) REQUIRE f.id IS UNIQUE",
-            "CREATE CONSTRAINT class_id IF NOT EXISTS FOR (c:Class) REQUIRE c.id IS UNIQUE",
+            "CREATE CONSTRAINT file_id     IF NOT EXISTS FOR (f:File)     REQUIRE f.id IS UNIQUE",
+            "CREATE CONSTRAINT class_id    IF NOT EXISTS FOR (c:Class)    REQUIRE c.id IS UNIQUE",
             "CREATE CONSTRAINT function_id IF NOT EXISTS FOR (fn:Function) REQUIRE fn.id IS UNIQUE",
         ]
-        async with self.driver.session(database=self.database) as session:
-            for query in constraints:
+        async with self.driver.session(database=self.database) as s:
+            for q in constraints:
                 try:
-                    await session.run(query)
+                    await s.run(q)
                 except Exception as e:
-                    logger.warning(f"Async Neo4j constraint creation note: {e}")
+                    logger.warning(f"[Neo4j] Schema note: {e}")
 
-    async def upload_parsed_data(self, parsed_data: Dict[str, Any], clear_existing: bool = False):
+    # ------------------------------------------------------------------
+    # Single-node upserts (called per-chunk by the pipeline)
+    # ------------------------------------------------------------------
+    async def upsert_file_node(self, node_id: str, file_record: dict):
+        query = """
+        MERGE (f:File {id: $id})
+        SET   f.name      = $name,
+              f.file_path = $file_path
         """
-        Uploads parsed codebase structure asynchronously to Neo4j.
+        file_name = os.path.basename(file_record.get("file_path", ""))
+        async with self.driver.session(database=self.database) as s:
+            await s.run(query, id=node_id,
+                        name=file_name,
+                        file_path=file_record.get("file_path", ""))
+
+    async def upsert_class_node(self, node_id: str, chunk: dict):
+        query = """
+        MERGE (c:Class {id: $id})
+        SET   c.name      = $name,
+              c.file_path = $file_path
         """
-        await self.connect()
-        await self.setup_schema()
+        async with self.driver.session(database=self.database) as s:
+            await s.run(query, id=node_id,
+                        name=chunk["name"],
+                        file_path=chunk.get("file_path", ""))
 
-        files = parsed_data.get("files", [])
-        chunks = parsed_data.get("chunks", [])
+    async def upsert_function_node(self, node_id: str, chunk: dict):
+        query = """
+        MERGE (fn:Function {id: $id})
+        SET   fn.name             = $name,
+              fn.file_path        = $file_path,
+              fn.belongs_to_class = $belongs_to_class
+        """
+        async with self.driver.session(database=self.database) as s:
+            await s.run(query, id=node_id,
+                        name=chunk["name"],
+                        file_path=chunk.get("file_path", ""),
+                        belongs_to_class=chunk.get("belongs_to_class"))
 
-        symbol_map = {}
-        for chunk in chunks:
-            name = chunk["name"]
-            fqn = chunk["fqn"]
-            symbol_map.setdefault(name, []).append(fqn)
+    # ------------------------------------------------------------------
+    # Bulk relationship phase (after all nodes uploaded)
+    # ------------------------------------------------------------------
+    async def build_relationships(self, parsed_data: Dict[str, Any], id_map: Dict[str, str]):
+        """
+        Builds all edges in Neo4j after nodes are fully uploaded.
 
-        async with self.driver.session(database=self.database) as session:
-            if clear_existing:
-                logger.info("Clearing existing Neo4j graph asynchronously...")
-                await session.run("MATCH (n) DETACH DELETE n")
+        id_map: { fqn -> uuid5_string }  – built by the pipeline orchestrator.
 
-            # 1. File Nodes
-            logger.info(f"Async upserting {len(files)} File nodes...")
-            file_query = """
-            UNWIND $files AS file
-            MERGE (f:File {id: file.fqn})
-            SET f.file_path = file.file_path,
-                f.total_lines = file.total_lines,
-                f.code_content = file.code_content
-            """
-            await session.run(file_query, files=files)
+        CALLS edge resolution is import-aware:
+          1. Check if called symbol is in the file's import map → resolve to
+             the specific cross-file FQN (e.g. agent.tools.search_web)
+          2. If not found in imports → fall back to same-file symbol lookup
+          3. If still not found → skip (external library call, not in codebase)
+        """
+        files   = parsed_data.get("files",  [])
+        chunks  = parsed_data.get("chunks", [])
+        classes   = [c for c in chunks if c["type"] == "class"]
+        functions = [c for c in chunks if c["type"] in ("function", "async_function")]
 
-            classes = [c for c in chunks if c["type"] == "class"]
-            functions = [c for c in chunks if c["type"] in ("function", "async_function")]
+        # --- Build lookup structures ---
 
-            # 2. Class Nodes
-            logger.info(f"Async upserting {len(classes)} Class nodes...")
-            class_query = """
-            UNWIND $classes AS cls
-            MERGE (c:Class {id: cls.fqn})
-            SET c.name = cls.name,
-                c.file_path = cls.file_path,
-                c.signature = cls.signature,
-                c.docstring = cls.docstring,
-                c.inherits_from = cls.inherits_from,
-                c.code_content = cls.code_content,
-                c.start_line = cls.start_line,
-                c.end_line = cls.end_line
-            """
-            await session.run(class_query, classes=classes)
+        # name -> [fqn, ...]  for all functions in codebase (same-file fallback)
+        symbol_map: Dict[str, list] = {}
+        for fn in functions:
+            symbol_map.setdefault(fn["name"], []).append(fn["fqn"])
 
-            # 3. Function Nodes
-            logger.info(f"Async upserting {len(functions)} Function nodes...")
-            func_query = """
-            UNWIND $functions AS fn
-            MERGE (f:Function {id: fn.fqn})
-            SET f.name = fn.name,
-                f.type = fn.type,
-                f.file_path = fn.file_path,
-                f.belongs_to_class = fn.belongs_to_class,
-                f.signature = fn.signature,
-                f.docstring = fn.docstring,
-                f.is_api_endpoint = fn.is_api_endpoint,
-                f.api_path = fn.api_path,
-                f.http_method = fn.http_method,
-                f.code_content = fn.code_content,
-                f.start_line = fn.start_line,
-                f.end_line = fn.end_line
-            """
-            await session.run(func_query, functions=functions)
+        # file_path -> { alias/name -> target_fqn }  (import-aware resolution)
+        import_map = _build_file_import_map(files)
 
-            # 4. Containment Edges
-            logger.info("Async building containment relationships...")
-            contains_query = """
-            UNWIND $chunks AS chunk
-            MATCH (f:File {file_path: chunk.file_path})
-            WITH f, chunk
-            WHERE chunk.type = 'class'
-            MATCH (c:Class {id: chunk.fqn})
-            MERGE (f)-[:CONTAINS]->(c)
-            """
-            await session.run(contains_query, chunks=chunks)
+        # class fqn -> class chunk  (for method containment)
+        class_by_file_and_name: Dict[tuple, str] = {}
+        for cls in classes:
+            class_by_file_and_name[(cls["file_path"], cls["name"])] = cls["fqn"]
 
-            contains_func_query = """
-            UNWIND $chunks AS chunk
-            MATCH (f:File {file_path: chunk.file_path})
-            WITH f, chunk
-            WHERE chunk.type IN ['function', 'async_function'] AND chunk.belongs_to_class IS NULL
-            MATCH (fn:Function {id: chunk.fqn})
-            MERGE (f)-[:CONTAINS]->(fn)
-            """
-            await session.run(contains_func_query, chunks=chunks)
+        async with self.driver.session(database=self.database) as s:
 
-            class_contains_method = """
-            UNWIND $chunks AS chunk
-            WITH chunk
-            WHERE chunk.belongs_to_class IS NOT NULL
-            MATCH (c:Class) WHERE c.file_path = chunk.file_path AND c.name = chunk.belongs_to_class
-            MATCH (fn:Function {id: chunk.fqn})
-            MERGE (c)-[:CONTAINS]->(fn)
-            """
-            await session.run(class_contains_method, chunks=chunks)
+            # ── File -[:CONTAINS]-> Class ──────────────────────────────────
+            for cls in classes:
+                file_fqn = (cls["file_path"]
+                            .replace("/", ".").replace("\\", ".")
+                            .removesuffix(".py"))
+                file_id  = id_map.get(file_fqn)
+                class_id = id_map.get(cls["fqn"])
+                if file_id and class_id:
+                    await s.run(
+                        "MATCH (f:File {id:$fid}) MATCH (c:Class {id:$cid}) "
+                        "MERGE (f)-[:CONTAINS]->(c)",
+                        fid=file_id, cid=class_id,
+                    )
 
-            # 5. Inheritance Edges
-            logger.info("Async building inheritance relationships...")
-            inheritance_query = """
-            UNWIND $classes AS cls
-            UNWIND cls.inherits_from AS base_name
-            MATCH (sub:Class {id: cls.fqn})
-            OPTIONAL MATCH (parent:Class) WHERE parent.name = base_name
-            FOREACH (_ IN CASE WHEN parent IS NOT NULL THEN [1] ELSE [] END |
-                MERGE (sub)-[:INHERITS_FROM]->(parent)
-            )
-            """
-            await session.run(inheritance_query, classes=classes)
-
-            # 6. Call Graph Edges
-            logger.info("Async building call graph relationships...")
-            call_records = []
+            # ── File -[:CONTAINS]-> Function  (top-level only) ─────────────
             for fn in functions:
-                caller_fqn = fn["fqn"]
-                for call_sym in fn.get("calls_symbols", []):
-                    short_sym = call_sym.split(".")[-1]
-                    if short_sym in symbol_map:
-                        for target_fqn in symbol_map[short_sym]:
-                            if target_fqn != caller_fqn:
-                                call_records.append({"caller": caller_fqn, "callee": target_fqn})
+                if fn.get("belongs_to_class"):
+                    continue
+                file_fqn = (fn["file_path"]
+                            .replace("/", ".").replace("\\", ".")
+                            .removesuffix(".py"))
+                file_id = id_map.get(file_fqn)
+                fn_id   = id_map.get(fn["fqn"])
+                if file_id and fn_id:
+                    await s.run(
+                        "MATCH (f:File {id:$fid}) MATCH (fn:Function {id:$fnid}) "
+                        "MERGE (f)-[:CONTAINS]->(fn)",
+                        fid=file_id, fnid=fn_id,
+                    )
 
-            call_query = """
-            UNWIND $calls AS call
-            MATCH (caller:Function {id: call.caller})
-            MATCH (callee:Function {id: call.callee})
-            MERGE (caller)-[:CALLS]->(callee)
-            """
-            await session.run(call_query, calls=call_records)
-
-        logger.info("[OK] Async Neo4j graph upload completed successfully!")
-
-
-class Neo4jCodebaseUploader:
-    """
-    Synchronous wrapper around AsyncNeo4jCodebaseUploader for backward compatibility.
-    """
-    def __init__(self, uri: str = None, user: str = None, password: str = None, database: str = None):
-        self.async_uploader = AsyncNeo4jCodebaseUploader(uri, user, password, database)
-
-    def upload(self, parsed_data: Dict[str, Any], clear_existing: bool = False):
-        asyncio.run(self._run_upload(parsed_data, clear_existing))
-
-    async def _run_upload(self, parsed_data: Dict[str, Any], clear_existing: bool = False):
-        await self.async_uploader.upload_parsed_data(parsed_data, clear_existing)
-        await self.async_uploader.close()
-
-    def close(self):
-        pass
-
-    def connect(self):
-        if not self.driver:
-            self.driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
-            logger.info(f"Connected to Neo4j at {self.uri}")
-
-    def close(self):
-        if self.driver:
-            self.driver.close()
-            self.driver = None
-
-    def setup_schema(self):
-        """Creates indexes and uniqueness constraints."""
-        constraints = [
-            "CREATE CONSTRAINT file_id IF NOT EXISTS FOR (f:File) REQUIRE f.id IS UNIQUE",
-            "CREATE CONSTRAINT class_id IF NOT EXISTS FOR (c:Class) REQUIRE c.id IS UNIQUE",
-            "CREATE CONSTRAINT function_id IF NOT EXISTS FOR (fn:Function) REQUIRE fn.id IS UNIQUE",
-        ]
-        with self.driver.session(database=self.database) as session:
-            for query in constraints:
-                try:
-                    session.run(query)
-                except Exception as e:
-                    logger.warning(f"Neo4j constraint creation note: {e}")
-
-    def upload(self, parsed_data: Dict[str, Any], clear_existing: bool = False):
-        """
-        Uploads parsed repository structure (files and chunks) to Neo4j.
-        """
-        self.connect()
-        self.setup_schema()
-
-        files = parsed_data.get("files", [])
-        chunks = parsed_data.get("chunks", [])
-
-        # Build symbol lookup map (name -> [fqn]) for call resolution
-        symbol_map = {}
-        for chunk in chunks:
-            name = chunk["name"]
-            fqn = chunk["fqn"]
-            symbol_map.setdefault(name, []).append(fqn)
-
-        with self.driver.session(database=self.database) as session:
-            if clear_existing:
-                logger.info("Clearing existing graph database...")
-                session.run("MATCH (n) DETACH DELETE n")
-
-            # 1. Upsert File Nodes
-            logger.info(f"Upserting {len(files)} File nodes...")
-            file_query = """
-            UNWIND $files AS file
-            MERGE (f:File {id: file.fqn})
-            SET f.file_path = file.file_path,
-                f.total_lines = file.total_lines,
-                f.code_content = file.code_content
-            """
-            session.run(file_query, files=files)
-
-            # Separate classes and functions
-            classes = [c for c in chunks if c["type"] == "class"]
-            functions = [c for c in chunks if c["type"] in ("function", "async_function")]
-
-            # 2. Upsert Class Nodes
-            logger.info(f"Upserting {len(classes)} Class nodes...")
-            class_query = """
-            UNWIND $classes AS cls
-            MERGE (c:Class {id: cls.fqn})
-            SET c.name = cls.name,
-                c.file_path = cls.file_path,
-                c.signature = cls.signature,
-                c.docstring = cls.docstring,
-                c.inherits_from = cls.inherits_from,
-                c.code_content = cls.code_content,
-                c.start_line = cls.start_line,
-                c.end_line = cls.end_line
-            """
-            session.run(class_query, classes=classes)
-
-            # 3. Upsert Function / Method Nodes
-            logger.info(f"Upserting {len(functions)} Function nodes...")
-            func_query = """
-            UNWIND $functions AS fn
-            MERGE (f:Function {id: fn.fqn})
-            SET f.name = fn.name,
-                f.type = fn.type,
-                f.file_path = fn.file_path,
-                f.belongs_to_class = fn.belongs_to_class,
-                f.signature = fn.signature,
-                f.docstring = fn.docstring,
-                f.is_api_endpoint = fn.is_api_endpoint,
-                f.api_path = fn.api_path,
-                f.http_method = fn.http_method,
-                f.code_content = fn.code_content,
-                f.start_line = fn.start_line,
-                f.end_line = fn.end_line
-            """
-            session.run(func_query, functions=functions)
-
-            # 4. Containment Edges: (:File)-[:CONTAINS]->(:Class / :Function)
-            logger.info("Building containment relationships...")
-            contains_query = """
-            UNWIND $chunks AS chunk
-            MATCH (f:File {file_path: chunk.file_path})
-            WITH f, chunk
-            WHERE chunk.type = 'class'
-            MATCH (c:Class {id: chunk.fqn})
-            MERGE (f)-[:CONTAINS]->(c)
-            """
-            session.run(contains_query, chunks=chunks)
-
-            contains_func_query = """
-            UNWIND $chunks AS chunk
-            MATCH (f:File {file_path: chunk.file_path})
-            WITH f, chunk
-            WHERE chunk.type IN ['function', 'async_function'] AND chunk.belongs_to_class IS NULL
-            MATCH (fn:Function {id: chunk.fqn})
-            MERGE (f)-[:CONTAINS]->(fn)
-            """
-            session.run(contains_func_query, chunks=chunks)
-
-            # Class -> Method containment
-            class_contains_method = """
-            UNWIND $chunks AS chunk
-            WITH chunk
-            WHERE chunk.belongs_to_class IS NOT NULL
-            MATCH (c:Class) WHERE c.file_path = chunk.file_path AND c.name = chunk.belongs_to_class
-            MATCH (fn:Function {id: chunk.fqn})
-            MERGE (c)-[:CONTAINS]->(fn)
-            """
-            session.run(class_contains_method, chunks=chunks)
-
-            # 5. Inheritance Edges: (:Class)-[:INHERITS_FROM]->(:Class)
-            logger.info("Building inheritance relationships...")
-            inheritance_query = """
-            UNWIND $classes AS cls
-            UNWIND cls.inherits_from AS base_name
-            MATCH (sub:Class {id: cls.fqn})
-            OPTIONAL MATCH (parent:Class) WHERE parent.name = base_name
-            FOREACH (_ IN CASE WHEN parent IS NOT NULL THEN [1] ELSE [] END |
-                MERGE (sub)-[:INHERITS_FROM]->(parent)
-            )
-            """
-            session.run(inheritance_query, classes=classes)
-
-            # 6. Call Graph Edges: (:Function)-[:CALLS]->(:Function)
-            logger.info("Building call graph relationships...")
-            call_records = []
+            # ── Class -[:CONTAINS]-> Function  (methods) ───────────────────
             for fn in functions:
-                caller_fqn = fn["fqn"]
-                for call_sym in fn.get("calls_symbols", []):
-                    # Check if call symbol matches an FQN directly or by symbol name
-                    short_sym = call_sym.split(".")[-1]
-                    if short_sym in symbol_map:
-                        for target_fqn in symbol_map[short_sym]:
-                            if target_fqn != caller_fqn:
-                                call_records.append({"caller": caller_fqn, "callee": target_fqn})
+                parent_class = fn.get("belongs_to_class")
+                if not parent_class:
+                    continue
+                class_fqn = class_by_file_and_name.get((fn["file_path"], parent_class))
+                class_id  = id_map.get(class_fqn) if class_fqn else None
+                fn_id     = id_map.get(fn["fqn"])
+                if class_id and fn_id:
+                    await s.run(
+                        "MATCH (c:Class {id:$cid}) MATCH (fn:Function {id:$fnid}) "
+                        "MERGE (c)-[:CONTAINS]->(fn)",
+                        cid=class_id, fnid=fn_id,
+                    )
 
-            call_query = """
-            UNWIND $calls AS call
-            MATCH (caller:Function {id: call.caller})
-            MATCH (callee:Function {id: call.callee})
-            MERGE (caller)-[:CALLS]->(callee)
-            """
-            session.run(call_query, calls=call_records)
+            # ── Class -[:INHERITS_FROM]-> Class ────────────────────────────
+            for cls in classes:
+                sub_id = id_map.get(cls["fqn"])
+                if not sub_id:
+                    continue
+                for base_name in cls.get("inherits_from", []):
+                    for other in classes:
+                        if other["name"] == base_name:
+                            parent_id = id_map.get(other["fqn"])
+                            if parent_id:
+                                await s.run(
+                                    "MATCH (s:Class {id:$sid}) MATCH (p:Class {id:$pid}) "
+                                    "MERGE (s)-[:INHERITS_FROM]->(p)",
+                                    sid=sub_id, pid=parent_id,
+                                )
 
-        logger.info("[OK] Neo4j graph upload completed successfully!")
+            # ── Function -[:CALLS]-> Function  (import-aware) ──────────────
+            for fn in functions:
+                caller_id   = id_map.get(fn["fqn"])
+                caller_file = fn.get("file_path", "")
+                file_imports = import_map.get(caller_file, {})
 
-if __name__ == "__main__":
-    from ingestion.parser import process_repository
-    logging.basicConfig(level=logging.INFO)
-    parsed = process_repository("cloned-repo")
-    uploader = Neo4jCodebaseUploader()
-    # To run against local neo4j: uploader.upload(parsed)
-    print("Neo4j Uploader initialized successfully.")
+                if not caller_id:
+                    continue
+
+                for sym in fn.get("calls_symbols", []):
+                    short = sym.split(".")[-1]
+                    resolved_fqn = None
+
+                    # Priority 1: import-aware resolution
+                    # e.g. sym="search_web", import says "from agent.tools import search_web"
+                    # → file_imports["search_web"] = "agent.tools.search_web"
+                    if short in file_imports:
+                        candidate = file_imports[short]   # e.g. "agent.tools.search_web"
+                        if candidate in id_map:
+                            resolved_fqn = candidate
+                        else:
+                            # The imported name might itself be a module, not a function.
+                            # Try module.short_name pattern as fallback.
+                            module_candidate = f"{file_imports[short]}.{short}"
+                            if module_candidate in id_map:
+                                resolved_fqn = module_candidate
+
+                    # Priority 2: same-file symbol lookup (no cross-file ambiguity)
+                    if not resolved_fqn:
+                        same_file_matches = [
+                            fqn for fqn in symbol_map.get(short, [])
+                            if fqn != fn["fqn"] and
+                            any(f["fqn"] == fqn and f["file_path"] == caller_file
+                                for f in functions)
+                        ]
+                        if same_file_matches:
+                            resolved_fqn = same_file_matches[0]
+
+                    # Priority 3: any codebase-wide match by name
+                    # (only if symbol NOT in file imports – avoids false positives)
+                    if not resolved_fqn and short not in file_imports:
+                        all_matches = [
+                            fqn for fqn in symbol_map.get(short, [])
+                            if fqn != fn["fqn"] and fqn in id_map
+                        ]
+                        if len(all_matches) == 1:
+                            # Unambiguous: only one function with this name in codebase
+                            resolved_fqn = all_matches[0]
+                        elif len(all_matches) > 1:
+                            logger.debug(
+                                f"[Neo4j] Ambiguous CALLS: {fn['fqn']} calls '{short}' "
+                                f"(matches {all_matches}) – skipping to avoid false edges"
+                            )
+
+                    if resolved_fqn:
+                        callee_id = id_map.get(resolved_fqn)
+                        if callee_id:
+                            await s.run(
+                                "MATCH (a:Function {id:$aid}) MATCH (b:Function {id:$bid}) "
+                                "MERGE (a)-[:CALLS]->(b)",
+                                aid=caller_id, bid=callee_id,
+                            )
+
+        logger.info("[Neo4j] All relationships built.")

@@ -26,3 +26,5 @@ remaining_ingest.py
 embed_store.py
 ingester.py
 .env
+file_check.py
+image.png
