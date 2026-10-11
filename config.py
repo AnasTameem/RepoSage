@@ -6,7 +6,7 @@ load_dotenv()
 
 # --- Root & Repo Paths ---
 BASE_DIR = Path(__file__).resolve().parent
-REPO_DIR = BASE_DIR / "cloned_repo"
+REPO_DIR = BASE_DIR / "cloned-repo"
 
 # --- Embedding Model Settings ---
 EMBEDDING_MODEL_NAME = "voyage-code-3"
