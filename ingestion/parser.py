@@ -255,6 +255,7 @@ def process_repository(repo_path):
 
 if __name__ == "__main__":
     try:
+        # pyrefly: ignore [missing-import]
         from config import REPO_DIR
         target_repo = str(REPO_DIR)
     except ImportError:
