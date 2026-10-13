@@ -1,4 +1,4 @@
-﻿import os
+import os
 import asyncio
 import logging
 import random
@@ -202,6 +202,64 @@ class VoyageEmbedder:
                 await asyncio.sleep(backoff)
 
 
+def build_enriched_embed_text(chunk: dict, summary: str = "") -> str:
+    """
+    Enriches the text string passed to the embedding model by prepending
+    critical metadata (File Path, Class Name, Decorators, Signature)
+    before the Summary & Docstring.
+
+    Format:
+        File Path: <path>
+        Class Name: <class or None>
+        Decorators: <decorators, @api_endpoint or None>
+        Signature: <signature>
+        Summary & Docstring: <summary + docstring>
+    """
+    file_path = chunk.get("file_path", "")
+
+    # Class Name: parent class if method, chunk name if class, else None
+    class_name = chunk.get("belongs_to_class")
+    if not class_name and chunk.get("type") == "class":
+        class_name = chunk.get("name")
+    if not class_name:
+        class_name = "None"
+
+    # Decorators: include extracted decorators and reflect @api_endpoint flag
+    decorators = chunk.get("decorators") or []
+    dec_items = [f"@{d}" if not d.startswith("@") else d for d in decorators]
+    if chunk.get("is_api_endpoint") and not any("api_endpoint" in d.lower() for d in dec_items):
+        dec_items.append("@api_endpoint")
+    decorators_str = ", ".join(dec_items) if dec_items else "None"
+
+    # Signature
+    signature = chunk.get("signature") or ""
+
+    # Summary & Docstring
+    code = chunk.get("code_content", "")
+    docstr = (chunk.get("docstring") or "").strip()
+    summary_clean = (summary or "").strip()
+
+    if summary_clean and docstr:
+        summary_doc = f"{summary_clean}\nDocstring: {docstr}"
+    elif summary_clean:
+        summary_doc = summary_clean
+    elif docstr:
+        summary_doc = f"Docstring: {docstr}"
+    else:
+        summary_doc = code[:MAX_CHARS_PER_CHUNK]
+
+    lines = [
+        f"File Path: {file_path}",
+        f"Class Name: {class_name}",
+        f"Decorators: {decorators_str}",
+    ]
+    if signature.strip():
+        lines.append(f"Signature: {signature.strip()}")
+    lines.append(f"Summary & Docstring: {summary_doc}")
+
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------- #
 #  Qdrant uploader
 # --------------------------------------------------------------------------- #
@@ -210,13 +268,16 @@ class QdrantUploader:
     Responsible for:
       1. Building imports context from file_global_imports
       2. Calling Cloudflare LLM to summarise code (with import context)
-      3. Combining summary + docstring into embed text
+      3. Prepending critical metadata (File Path, Class Name, Decorators, Signature)
+         to Summary & Docstring to build enriched embedding text
       4. Calling Voyage AI to embed
       5. Upserting the point + slim payload into Qdrant
 
     node_id (UUID5 string) is supplied externally by the pipeline orchestrator
     and is the same ID stored in Neo4j — the shared cross-DB key.
     """
+
+    build_enriched_embed_text = staticmethod(build_enriched_embed_text)
 
     def __init__(self, qdrant_url=None, qdrant_api_key=None,
                  voyage_api_key=None, collection_name=None, embedding_model=None,
@@ -273,10 +334,14 @@ class QdrantUploader:
           raw code          ├─► Cloudflare LLM ──► summary
                             │
           summary ──────────┤
-          docstring (opt.)  ├─► embed_text ──► Voyage AI ──► vector ──► Qdrant
+          docstring (opt.)  │
+          critical metadata ├─► enriched embed_text ──► Voyage AI ──► vector ──► Qdrant
+            (file_path,     │
+             class_name,    │
+             decorators,    │
+             signature)     │
         """
         code   = chunk.get("code_content", "")
-        docstr = chunk.get("docstring", "") or ""
 
         # 1. Build import context header from the file's global imports
         imports_header = _build_imports_header(chunk.get("file_global_imports", []))
@@ -284,14 +349,8 @@ class QdrantUploader:
         # 2. Summarise raw code via Cloudflare LLM (imports prepended for context)
         summary = await self.summarizer.summarize(code, imports_header=imports_header)
 
-        # 3. Build embedding text: summary + docstring (if any)
-        embed_text = summary
-        if docstr.strip():
-            embed_text = f"{summary}\n\nDocstring: {docstr.strip()}"
-
-        if not embed_text.strip():
-            # Absolute fallback – embed the raw code directly (no summary available)
-            embed_text = code[:MAX_CHARS_PER_CHUNK]
+        # 3. Build enriched embedding text prepending metadata (File Path, Class Name, Decorators, Signature)
+        embed_text = build_enriched_embed_text(chunk, summary)
 
         # 4. Get vector embedding
         vectors = await self.embedder.embed([embed_text])
