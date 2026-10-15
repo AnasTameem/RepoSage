@@ -234,6 +234,29 @@ class Retrieval:
 
         return results
 
+    async def get_payloads_by_ids(self, ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Batch-retrieves points from Qdrant using client.retrieve(ids=[...]).
+        Returns a dictionary mapping str(point_id) -> payload dict.
+        """
+        if not ids:
+            return {}
+        if not self.qdrant:
+            await self.init_clients()
+
+        # Deduplicate and filter empty IDs
+        unique_ids = list(dict.fromkeys(str(i) for i in ids if i))
+        if not unique_ids:
+            return {}
+
+        records = await self.qdrant.retrieve(
+            collection_name=self.collection_name,
+            ids=unique_ids,
+            with_payload=True,
+            with_vectors=False,
+        )
+        return {str(record.id): (record.payload or {}) for record in records}
+
     async def contextualize_query(self, query: str, history: List[str]) -> str:
         """
         Reformulates a follow-up query into a standalone search query
@@ -294,7 +317,7 @@ class Retrieval:
         self,
         query: str,
         limit: int = 5,
-        score_threshold: float = 0.5,
+        score_threshold: Optional[float] = None,
         history: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
