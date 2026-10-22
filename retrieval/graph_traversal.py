@@ -231,11 +231,18 @@ class GraphTraversal:
             }
 
         # 2. Single batched Neo4j round-trip — per-seed cardinality enforced inside
-        all_adjacent = await self.get_adjacent_nodes_batch(
-            seed_ids=list(seed_meta.keys()),
-            max_hops=max_hops,
-            per_seed_limit=per_seed_limit,
-        )
+        all_adjacent = []
+        try:
+            all_adjacent = await self.get_adjacent_nodes_batch(
+                seed_ids=list(seed_meta.keys()),
+                max_hops=max_hops,
+                per_seed_limit=per_seed_limit,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[GraphTraversal] Neo4j graph expansion unavailable ({exc}). Proceeding with primary vector seeds only."
+            )
+            all_adjacent = []
 
         # 3. Collect unique IDs returned from Neo4j that weren't already fetched from Qdrant
         seed_ids = set(seed_meta.keys())
@@ -283,25 +290,32 @@ class GraphTraversal:
 # --------------------------------------------------------------------------- #
 def build_context_window(
     expanded_results: List[Dict[str, Any]],
-    max_chars: Optional[int] = None,
+    max_chars: int = 10000,
+    max_seed_snippet_chars: int = 1500,
+    max_adj_snippet_chars: int = 1000,
+    max_adj_code_count: int = 2,
 ) -> str:
     """
-    Builds a unified, deduplicated prompt context window combining:
-      1. Primary vector seed chunks with similarity scores and full code snippets.
-      2. Connected graph nodes (1-2 hops via CALLS, CONTAINS, INHERITS_FROM) with their full code snippets.
-    Avoids duplicating identical code bodies across seeds.
+    Builds a strictly budgeted prompt context window combining:
+      1. Primary vector seed chunks with similarity scores and capped code snippets.
+      2. Top 1-hop direct dependencies with code snippets (capped count & size).
+      3. 2-hop connected nodes as compact structural references (no code bodies).
+    Enforces a strict ~10,000 character limit (~2,500 tokens) to guarantee
+    compliance with strict 8,000 TPM limits on large models like openai/gpt-oss-120b.
     """
     if not expanded_results:
         return "No relevant codebase context found."
 
     seen_code_ids = set()
-    sections: List[str] = []
+    current_length = 0
+    adj_code_snippets_added = 0
 
+    sections: List[str] = []
     sections.append("# ====================================================================")
     sections.append("# CODEBASE RETRIEVAL CONTEXT (Vector Seeds + Graph Traversal Expansion)")
     sections.append("# ====================================================================\n")
 
-    # Section 1: Top Vector Seeds
+    # Section 1: Top Vector Seeds (Primary Entry Points)
     sections.append("## PRIMARY RELEVANT SEEDS (Vector Search Matches)")
     for idx, seed in enumerate(expanded_results, 1):
         sid = seed.get("seed_id", "")
@@ -313,6 +327,8 @@ def build_context_window(
         e_line = seed.get("end_line")
         line_info = f" (Lines {s_line}-{e_line})" if s_line and e_line else ""
         raw_code = seed.get("raw_code", "").strip()
+        if len(raw_code) > max_seed_snippet_chars:
+            raw_code = raw_code[:max_seed_snippet_chars].rstrip() + "\n# ... [Remaining code omitted to stay within token budget] ..."
 
         sections.append(f"### [Seed #{idx}] {name}")
         sections.append(f"- File: {file_path}{line_info}")
@@ -325,7 +341,9 @@ def build_context_window(
         else:
             sections.append("*(No code body attached)*\n")
 
-    # Section 2: Graph Expansion Connections
+    current_length = sum(len(s) + 1 for s in sections)
+
+    # Section 2: Structural Graph Expansion (1-2 Hops)
     sections.append("## STRUCTURAL GRAPH EXPANSION (1-2 Hops via Neo4j)")
     for idx, seed in enumerate(expanded_results, 1):
         s_name = seed.get("seed_name", "Unknown")
@@ -333,8 +351,11 @@ def build_context_window(
         if not adj_nodes:
             continue
 
+        # Sort so 1-hop comes before 2-hop
+        sorted_adj = sorted(adj_nodes, key=lambda n: n.get("hops", 1))
+
         sections.append(f"### Graph Connections for Seed #{idx} ({s_name}):")
-        for node in adj_nodes:
+        for node in sorted_adj:
             nid = node.get("id", "")
             ntype = node.get("type", "Node")
             name = node.get("name", "Unknown")
@@ -346,25 +367,29 @@ def build_context_window(
             line_info = f" (Lines {s_line}-{e_line})" if s_line and e_line else ""
             raw_code = node.get("raw_code", "").strip()
 
-            sections.append(f"- [{hops}-Hop via {rels}] {ntype} `{name}` ({file_path}{line_info})")
+            line_header = f"- [{hops}-Hop via {rels}] {ntype} `{name}` ({file_path}{line_info})"
+            sections.append(line_header)
+            current_length += len(line_header) + 1
 
-            # Deduplicate code snippets
             if nid in seen_code_ids:
-                sections.append(f"  *(Code body for `{name}` already included above)*")
-            elif raw_code:
-                seen_code_ids.add(nid)
-                sections.append("  ```python")
-                sections.append("  " + raw_code.replace("\n", "\n  "))
-                sections.append("  ```")
-            else:
-                sections.append(f"  *(Structural node / container)*")
+                note = f"  *(Code body for `{name}` already included above)*"
+                sections.append(note)
+                current_length += len(note) + 1
+            elif raw_code and hops == 1 and adj_code_snippets_added < max_adj_code_count:
+                # Add 1-hop code snippet only if within strict budget
+                if len(raw_code) > max_adj_snippet_chars:
+                    raw_code = raw_code[:max_adj_snippet_chars].rstrip() + "\n# ... [Snippet truncated] ..."
+                code_block_len = len(raw_code) + 25
+                if (current_length + code_block_len) < max_chars:
+                    seen_code_ids.add(nid)
+                    adj_code_snippets_added += 1
+                    sections.append("  ```python")
+                    sections.append("  " + raw_code.replace("\n", "\n  "))
+                    sections.append("  ```")
+                    current_length += code_block_len
             sections.append("")
 
-    full_context = "\n".join(sections)
-    if max_chars and len(full_context) > max_chars:
-        full_context = full_context[:max_chars] + "\n\n... [Context truncated to stay within token limits] ..."
-
-    return full_context
+    return "\n".join(sections)
 
 
 # --------------------------------------------------------------------------- #

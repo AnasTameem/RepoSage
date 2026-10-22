@@ -12,8 +12,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from neo4j import AsyncGraphDatabase, AsyncDriver
 import voyageai
+import httpx
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import SearchParams
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
 try:
     from config import (
@@ -197,28 +199,39 @@ class Retrieval:
         # SearchParams(exact=True) forces Qdrant to bypass HNSW and perform flat scan
         search_params = SearchParams(exact=True)
 
-        if hasattr(self.qdrant, "query_points"):
-            response = await self.qdrant.query_points(
-                collection_name=self.collection_name,
-                query=query_vector,
-                limit=limit,
-                search_params=search_params,
-                score_threshold=score_threshold,
-                with_payload=True,
-                with_vectors=False,
-            )
-            raw_points = response.points
-        else:
-            raw_points = await self.qdrant.search(
-                collection_name=self.collection_name,
-                query_vector=query_vector,
-                limit=limit,
-                search_params=search_params,
-                score_threshold=score_threshold,
-                with_payload=True,
-                with_vectors=False,
-            )
-
+        raw_points = []
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                if hasattr(self.qdrant, "query_points"):
+                    response = await self.qdrant.query_points(
+                        collection_name=self.collection_name,
+                        query=query_vector,
+                        limit=limit,
+                        search_params=search_params,
+                        score_threshold=score_threshold,
+                        with_payload=True,
+                        with_vectors=False,
+                    )
+                    raw_points = response.points
+                else:
+                    raw_points = await self.qdrant.search(
+                        collection_name=self.collection_name,
+                        query_vector=query_vector,
+                        limit=limit,
+                        search_params=search_params,
+                        score_threshold=score_threshold,
+                        with_payload=True,
+                        with_vectors=False,
+                    )
+                break
+            except (ResponseHandlingException, UnexpectedResponse, httpx.TimeoutException, httpx.NetworkError, Exception) as exc:
+                if attempt == max_retries:
+                    logger.error(f"[Qdrant] Search failed after {max_retries} attempts: {exc}")
+                    raise
+                backoff = attempt * 2
+                logger.warning(f"[Qdrant] Search attempt {attempt}/{max_retries} failed ({exc}). Retrying in {backoff}s...")
+                await asyncio.sleep(backoff)
 
         results = []
         for point in raw_points:
@@ -249,13 +262,24 @@ class Retrieval:
         if not unique_ids:
             return {}
 
-        records = await self.qdrant.retrieve(
-            collection_name=self.collection_name,
-            ids=unique_ids,
-            with_payload=True,
-            with_vectors=False,
-        )
-        return {str(record.id): (record.payload or {}) for record in records}
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                records = await self.qdrant.retrieve(
+                    collection_name=self.collection_name,
+                    ids=unique_ids,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                return {str(record.id): (record.payload or {}) for record in records}
+            except (ResponseHandlingException, UnexpectedResponse, httpx.TimeoutException, httpx.NetworkError, Exception) as exc:
+                if attempt == max_retries:
+                    logger.error(f"[Qdrant] Retrieve payloads failed after {max_retries} attempts: {exc}")
+                    raise
+                backoff = attempt * 2
+                logger.warning(f"[Qdrant] Retrieve payloads attempt {attempt}/{max_retries} failed ({exc}). Retrying in {backoff}s...")
+                await asyncio.sleep(backoff)
+        return {}
 
     async def contextualize_query(self, query: str, history: List[str]) -> str:
         """

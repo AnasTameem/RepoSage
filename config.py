@@ -43,3 +43,11 @@ NEO4J_DATABASE = _neo4j_env("NEO4J_DATABASE", "neo4j")
 CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "")
 CF_API_TOKEN  = os.getenv("CF_API_TOKEN", "")
 CF_LLM_MODEL  = "@cf/meta/llama-3.2-3b-instruct"
+
+# --- Gemini LLM (Answer Generation) ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+
+# --- Groq LLM (Answer Generation - Legacy/Alternative) ---
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL   = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
