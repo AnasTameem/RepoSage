@@ -1,0 +1,217 @@
+name: RAG Quality Gate
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  workflow_dispatch:
+
+env:
+  # Tracing is disabled during CI to reduce noise and latency
+  OTEL_TRACING_ENABLED: "false"
+  # Ragas report output path
+  RAGAS_REPORT_PATH: eval/ragas_report.json
+  # Minimum acceptable mean scores (CI fails below these)
+  MIN_FAITHFULNESS: "0.55"
+  MIN_ANSWER_RELEVANCY: "0.55"
+
+jobs:
+  # ======================================================================
+  #  Job 1: Smoke Tests & DeepEval Regression Tests
+  # ======================================================================
+  regression-tests:
+    name: "DeepEval Regression Tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Run smoke tests (no LLM judge, fast)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          NEO4J_URI: ${{ secrets.NEO4J_URI }}
+          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+        run: |
+          uv run pytest test/unit/test_rag_deepeval.py::TestRAGPipelineSmoke \
+            -v \
+            --tb=short \
+            --timeout=120 \
+            --junit-xml=reports/smoke_results.xml
+
+      - name: Run DeepEval faithfulness tests
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          NEO4J_URI: ${{ secrets.NEO4J_URI }}
+          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+          DEEPEVAL_API_KEY: ${{ secrets.DEEPEVAL_API_KEY }}
+        run: |
+          uv run pytest test/unit/test_rag_deepeval.py::TestRAGFaithfulness \
+                        test/unit/test_rag_deepeval.py::TestRAGAnswerRelevancy \
+                        test/unit/test_rag_deepeval.py::TestRAGHallucination \
+            -v \
+            --tb=short \
+            --timeout=300 \
+            --junit-xml=reports/deepeval_results.xml
+        continue-on-error: false
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: reports/
+          retention-days: 30
+
+  # ======================================================================
+  #  Job 2: Ragas Offline Evaluation & Quality Gate
+  # ======================================================================
+  ragas-evaluation:
+    name: "Ragas Metrics Gate"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Only run on PRs to main/master to conserve API quota
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Run Ragas evaluation
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          NEO4J_URI: ${{ secrets.NEO4J_URI }}
+          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+        run: |
+          uv run python eval/ragas_eval.py \
+            --dataset eval/golden_dataset.json \
+            --output ${{ env.RAGAS_REPORT_PATH }} \
+            --top-seeds 2 \
+            --max-hops 1
+
+      - name: Quality gate — enforce minimum metric thresholds
+        run: |
+          python - <<'EOF'
+          import json, sys
+
+          report_path = "${{ env.RAGAS_REPORT_PATH }}"
+          min_faithfulness    = float("${{ env.MIN_FAITHFULNESS }}")
+          min_answer_relevancy = float("${{ env.MIN_ANSWER_RELEVANCY }}")
+
+          with open(report_path) as f:
+              report = json.load(f)
+
+          scores = report.get("mean_scores", {})
+          print("\n=== Ragas Quality Gate ===")
+          for k, v in scores.items():
+              print(f"  {k}: {v:.4f}")
+
+          failures = []
+          faithfulness = scores.get("faithfulness", scores.get("Faithfulness", None))
+          answer_rel   = scores.get("answer_relevancy", scores.get("AnswerRelevancy", None))
+
+          if faithfulness is not None and faithfulness < min_faithfulness:
+              failures.append(
+                  f"Faithfulness {faithfulness:.4f} < threshold {min_faithfulness}"
+              )
+          if answer_rel is not None and answer_rel < min_answer_relevancy:
+              failures.append(
+                  f"AnswerRelevancy {answer_rel:.4f} < threshold {min_answer_relevancy}"
+              )
+
+          if failures:
+              print("\n[QUALITY GATE FAILED]")
+              for msg in failures:
+                  print(f"  - {msg}")
+              sys.exit(1)
+          else:
+              print("\n[QUALITY GATE PASSED] All metrics above thresholds.")
+          EOF
+
+      - name: Upload Ragas report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ragas-evaluation-report
+          path: ${{ env.RAGAS_REPORT_PATH }}
+          retention-days: 90
+
+      - name: Comment PR with Ragas scores
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '## RAG Quality Gate Results\n\n';
+            try {
+              const report = JSON.parse(fs.readFileSync(process.env.RAGAS_REPORT_PATH, 'utf8'));
+              const scores = report.mean_scores || {};
+              body += '| Metric | Score |\n|---|---|\n';
+              for (const [k, v] of Object.entries(scores)) {
+                const emoji = v >= 0.6 ? '✅' : v >= 0.5 ? '⚠️' : '❌';
+                body += `| ${k} | ${emoji} ${parseFloat(v).toFixed(4)} |\n`;
+              }
+              body += `\n_Evaluated ${report.n_evaluated}/${report.n_questions} questions • ${report.run_timestamp}_`;
+            } catch (e) {
+              body += `⚠️ Could not parse Ragas report: ${e.message}`;
+            }
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
+        env:
+          RAGAS_REPORT_PATH: ${{ env.RAGAS_REPORT_PATH }}
+
+  # ======================================================================
+  #  Job 3: Lint
+  # ======================================================================
+  lint:
+    name: "Ruff Lint"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync --all-groups
+      - run: uv run ruff check . --output-format=github

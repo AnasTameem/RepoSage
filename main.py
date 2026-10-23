@@ -16,6 +16,13 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import List, Optional, Dict, Any, AsyncGenerator
 
+# Observability — import before any instrumented clients are created
+try:
+    from observability.tracing import setup_tracing, shutdown_tracing
+except ImportError:
+    def setup_tracing(**kwargs): pass  # type: ignore
+    def shutdown_tracing(): pass      # type: ignore
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -45,6 +52,10 @@ session_store: Dict[str, Dict[str, List[Any]]] = defaultdict(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global retriever, graph, generator
+
+    # Initialize distributed tracing BEFORE any instrumented clients are created
+    setup_tracing(service_name="reposage-rag")
+
     logger.info("[API] Initializing Codebase RAG services...")
     retriever = Retrieval()
     graph = GraphTraversal(retriever=retriever)
@@ -67,6 +78,9 @@ async def lifespan(app: FastAPI):
         await retriever.close()
     if generator:
         await generator.close()
+
+    # Flush remaining spans before process exits
+    shutdown_tracing()
 
 
 app = FastAPI(

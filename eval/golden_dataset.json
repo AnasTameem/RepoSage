@@ -1,0 +1,42 @@
+[
+  {
+    "question": "How does the Retrieval class embed a query for Qdrant search?",
+    "ground_truth": "The Retrieval class uses the Voyage AI client (voyage-code-3 model) to generate dense vector embeddings for a query string, then submits those embeddings to Qdrant for cosine similarity search via the async qdrant_client."
+  },
+  {
+    "question": "What graph relationships does Neo4j traversal follow in GraphTraversal?",
+    "ground_truth": "GraphTraversal follows CALLS, CONTAINS, and INHERITS_FROM relationships in Neo4j to expand from seed nodes to adjacent nodes during multi-hop traversal."
+  },
+  {
+    "question": "How does ResponseGenerator fall back to an alternative Gemini model?",
+    "ground_truth": "ResponseGenerator maintains a FALLBACK_MODELS list. If a model call raises a ClientError, ServerError, or APIError with status code 429 or 503, or the error message contains 'demand', it sleeps for 1 second and retries with the next model in the list."
+  },
+  {
+    "question": "What SSE event types does the FastAPI /api/v1/query endpoint emit?",
+    "ground_truth": "The endpoint emits five SSE event types: 'status' for pipeline stage updates, 'context' with retrieved seeds and graph relations metadata, 'token' for each streaming text chunk, 'done' when generation completes, and 'error' on failure."
+  },
+  {
+    "question": "How is session history maintained across multi-turn conversations?",
+    "ground_truth": "Session history is maintained in an in-memory defaultdict called session_store, keyed by session_id. Each session stores a query_history list of effective queries and a chat_history list of user/assistant message dicts, both updated after each successful generation."
+  },
+  {
+    "question": "What is the purpose of the build_context_window function?",
+    "ground_truth": "build_context_window compiles a formatted string prompt window from a list of expanded graph traversal result blocks, concatenating seed code snippets and their adjacent node code to form the context injected into the Gemini prompt."
+  },
+  {
+    "question": "How does the Streamlit app render streaming tokens from the FastAPI backend?",
+    "ground_truth": "The Streamlit app uses requests.post with stream=True to receive the SSE response, iterates over iter_lines(), parses lines prefixed with 'data: ' as JSON, and accumulates 'token' event payloads into a live text placeholder updated in real time."
+  },
+  {
+    "question": "What happens when Neo4j is unavailable during startup?",
+    "ground_truth": "During the FastAPI lifespan startup, if graph.connect() raises an exception (e.g., DNS resolution failure for Neo4j Aura), the error is caught and logged as a warning, and the application continues with vector-only retrieval fallback."
+  },
+  {
+    "question": "How is the Qdrant search configured to ensure exact results?",
+    "ground_truth": "The Retrieval class passes SearchParams(exact=True) when calling the Qdrant async client's search method, which forces an exact flat-scan rather than approximate nearest-neighbor search for deterministic results."
+  },
+  {
+    "question": "What Gemini model is used by default and what is the primary fallback?",
+    "ground_truth": "The default model is gemini-3.5-flash-lite. The primary fallback is gemini-3.5-flash, followed by gemini-3.8-flash and gemini-3.7-flash as further fallbacks."
+  }
+]
