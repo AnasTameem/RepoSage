@@ -13,6 +13,7 @@ dependencies = [
     "google-genai>=2.31.0",
     "groq>=1.7.0",
     "httpx>=0.28.1",
+    "langchain-community<0.4",
     "langchain-google-genai>=2.0.0",
     "neo4j>=6.3.1",
     "openai>=3.3.0",
@@ -38,5 +39,17 @@ dev = [
     "opentelemetry-exporter-otlp-proto-http>=1.27.0",
     "opentelemetry-sdk>=1.27.0",
     "pytest>=9.1.1",
+    "pytest-timeout>=2.3.1",
     "ruff>=0.16.8",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+norecursedirs = ["cloned-repo", ".venv", "scratch"]
+asyncio_mode = "auto"
+timeout = 60
+
+[tool.ruff.lint]
+ignore = ["BLE001", "ASYNC230", "N999", "PIE810", "SIM117"]
+
+

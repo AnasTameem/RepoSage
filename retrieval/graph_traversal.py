@@ -7,27 +7,33 @@ Strategy:
   3. Traverse 1–2 hops over explicit uppercase relationship types: CALLS, INHERITS_FROM, CONTAINS.
   4. Return adjacent nodes with name, file_path, type, and hop distance.
 """
+import argparse
+import asyncio
+import logging
 import os
 import sys
-import logging
-import asyncio
-import argparse
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from neo4j import AsyncGraphDatabase, AsyncDriver
-from neo4j.exceptions import ServiceUnavailable, DatabaseUnavailable, SessionExpired
+from neo4j import AsyncDriver, AsyncGraphDatabase
+from neo4j.exceptions import DatabaseUnavailable, ServiceUnavailable, SessionExpired
 
 try:
     from config import (
-        NEO4J_URI as CONFIG_NEO4J_URI,
-        NEO4J_USER as CONFIG_NEO4J_USER,
-        NEO4J_PASSWORD as CONFIG_NEO4J_PASSWORD,
         NEO4J_DATABASE as CONFIG_NEO4J_DATABASE,
+    )
+    from config import (
+        NEO4J_PASSWORD as CONFIG_NEO4J_PASSWORD,
+    )
+    from config import (
+        NEO4J_URI as CONFIG_NEO4J_URI,
+    )
+    from config import (
+        NEO4J_USER as CONFIG_NEO4J_USER,
     )
 except ImportError:
     CONFIG_NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
@@ -51,18 +57,18 @@ class GraphTraversal:
 
     def __init__(
         self,
-        neo4j_uri: Optional[str] = None,
-        neo4j_user: Optional[str] = None,
-        neo4j_password: Optional[str] = None,
-        neo4j_database: Optional[str] = None,
-        retriever: Optional[Any] = None,
+        neo4j_uri: str | None = None,
+        neo4j_user: str | None = None,
+        neo4j_password: str | None = None,
+        neo4j_database: str | None = None,
+        retriever: Any | None = None,
     ):
         self.neo4j_uri = neo4j_uri or CONFIG_NEO4J_URI
         self.neo4j_user = neo4j_user or CONFIG_NEO4J_USER
         self.neo4j_password = neo4j_password or CONFIG_NEO4J_PASSWORD
         self.neo4j_database = neo4j_database or CONFIG_NEO4J_DATABASE
         self.retriever = retriever
-        self.driver: Optional[AsyncDriver] = None
+        self.driver: AsyncDriver | None = None
 
     async def connect(self):
         """Initialize connection to Neo4j if not already connected."""
@@ -79,7 +85,7 @@ class GraphTraversal:
             await self.driver.close()
             self.driver = None
 
-    async def get_node_by_id(self, node_id: str) -> Optional[Dict[str, Any]]:
+    async def get_node_by_id(self, node_id: str) -> dict[str, Any] | None:
         """Fetch node details from Neo4j for a given node_id."""
         if not self.driver:
             await self.connect()
@@ -103,10 +109,10 @@ class GraphTraversal:
 
     async def get_adjacent_nodes_batch(
         self,
-        seed_ids: List[str],
+        seed_ids: list[str],
         max_hops: int = 2,
         per_seed_limit: int = 20,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Production-grade batched Neo4j traversal — single round-trip for all seeds.
 
@@ -190,12 +196,12 @@ class GraphTraversal:
 
     async def traverse_top_seeds(
         self,
-        qdrant_results: List[Dict[str, Any]],
+        qdrant_results: list[dict[str, Any]],
         top_seeds: int = 2,
         max_hops: int = 2,
         per_seed_limit: int = 20,
-        retriever: Optional[Any] = None,
-    ) -> List[Dict[str, Any]]:
+        retriever: Any | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Passes ALL top `top_seeds` Qdrant results into Neo4j as a single batched
         traversal query (UNWIND $seed_ids), 1–2 hops over
@@ -212,7 +218,7 @@ class GraphTraversal:
             return []
 
         # 1. Build seed metadata map keyed by node id
-        seed_meta: Dict[str, Dict[str, Any]] = {}
+        seed_meta: dict[str, dict[str, Any]] = {}
         for seed in seeds_to_process:
             sid = str(seed.get("id") or seed.get("payload", {}).get("id", ""))
             sp = seed.get("payload", {})
@@ -253,7 +259,7 @@ class GraphTraversal:
 
         # 4. Batch-retrieve payloads from Qdrant using client.retrieve(ids=[...])
         active_retriever = retriever or self.retriever
-        adj_payloads: Dict[str, Dict[str, Any]] = {}
+        adj_payloads: dict[str, dict[str, Any]] = {}
         if active_retriever and adjacent_ids_to_fetch:
             adj_payloads = await active_retriever.get_payloads_by_ids(adjacent_ids_to_fetch)
 
@@ -289,28 +295,33 @@ class GraphTraversal:
 #  Context Window Builder
 # --------------------------------------------------------------------------- #
 def build_context_window(
-    expanded_results: List[Dict[str, Any]],
+    expanded_results: list[dict[str, Any]],
     max_chars: int = 10000,
     max_seed_snippet_chars: int = 1500,
     max_adj_snippet_chars: int = 1000,
     max_adj_code_count: int = 2,
-) -> str:
+    return_chunks: bool = False,
+) -> Any:
     """
     Builds a strictly budgeted prompt context window combining:
       1. Primary vector seed chunks with similarity scores and capped code snippets.
       2. Top 1-hop direct dependencies with code snippets (capped count & size).
       3. 2-hop connected nodes as compact structural references (no code bodies).
-    Enforces a strict ~10,000 character limit (~2,500 tokens) to guarantee
-    compliance with strict 8,000 TPM limits on large models like openai/gpt-oss-120b.
+    Enforces a strict ~10,000 character limit (~2,500 tokens).
+
+    If return_chunks is True, returns (context_str, included_chunks_list) so
+    evaluation frameworks can score the exact chunks the LLM saw.
     """
     if not expanded_results:
-        return "No relevant codebase context found."
+        msg = "No relevant codebase context found."
+        return (msg, []) if return_chunks else msg
 
     seen_code_ids = set()
     current_length = 0
     adj_code_snippets_added = 0
+    included_chunks: list[str] = []
 
-    sections: List[str] = []
+    sections: list[str] = []
     sections.append("# ====================================================================")
     sections.append("# CODEBASE RETRIEVAL CONTEXT (Vector Seeds + Graph Traversal Expansion)")
     sections.append("# ====================================================================\n")
@@ -338,6 +349,7 @@ def build_context_window(
             sections.append("```python")
             sections.append(raw_code)
             sections.append("```\n")
+            included_chunks.append(f"### {name} ({file_path}{line_info})\n{raw_code}")
         else:
             sections.append("*(No code body attached)*\n")
 
@@ -387,15 +399,19 @@ def build_context_window(
                     sections.append("  " + raw_code.replace("\n", "\n  "))
                     sections.append("  ```")
                     current_length += code_block_len
+                    included_chunks.append(f"### [1-Hop {rels}] {ntype} `{name}` ({file_path}{line_info})\n{raw_code}")
             sections.append("")
 
-    return "\n".join(sections)
+    context_str = "\n".join(sections)
+    if return_chunks:
+        return context_str, included_chunks
+    return context_str
 
 
 # --------------------------------------------------------------------------- #
 #  Pretty Print Helper
 # --------------------------------------------------------------------------- #
-def print_traversal_results(traversal_results: List[Dict[str, Any]], show_context: bool = False):
+def print_traversal_results(traversal_results: list[dict[str, Any]], show_context: bool = False):
     """Prints formatted output of seed nodes and their 1..2 hop adjacent nodes with code snippet stats."""
     print("\n" + "=" * 70)
     print("  GRAPH EXPANSION RESULTS (1 to 2 Hops from Top-2 Qdrant Seeds)")
@@ -513,7 +529,7 @@ async def main():
         print("  Type 'exit' to quit")
         print("=" * 70)
 
-        query_history: List[str] = []
+        query_history: list[str] = []
         while True:
             prompt = "\nEnter your search query (or 'exit' to quit): " if not query_history else f"\nEnter follow-up query [turn {len(query_history)+1}] (or 'exit'): "
             query = input(prompt).strip()

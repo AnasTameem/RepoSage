@@ -1,0 +1,121 @@
+[
+  {
+    "question": "Where is ComputePolicy defined and what default parameters does it set?",
+    "ground_truth": "ComputePolicy is defined in agent/adaptive_compute.py. It specifies test-time compute budget parameters including max_candidates (default 3), max_extra_tokens (default 1800), max_latency_ms (default 15000), min_confidence_gain (0.04), min_consensus (0.5), and high_risk_min_consensus (0.67).",
+    "expected_symbols": [
+      {
+        "file": "agent/adaptive_compute.py",
+        "name": "ComputePolicy"
+      }
+    ],
+    "category": "where_is",
+    "is_smoke": true
+  },
+  {
+    "question": "Where is ClaimAssessment defined and what attributes does it track?",
+    "ground_truth": "ClaimAssessment is defined in agent/grounding.py. It tracks claim-level verification details including claim_index, claim text, claim_fingerprint, best_evidence_id, support_score, supported flag, high_risk flag, citation_urls, and invalid_citation_urls.",
+    "expected_symbols": [
+      {
+        "file": "agent/grounding.py",
+        "name": "ClaimAssessment"
+      }
+    ],
+    "category": "where_is",
+    "is_smoke": true
+  },
+  {
+    "question": "Where is GatewayPolicy defined and what budget limits does it configure?",
+    "ground_truth": "GatewayPolicy is defined in agent/model_gateway.py. It configures LLM inference gateway limits including version ('inference-policy-v1'), daily_budget_usd (default $5), max_prompt_tokens (16000), max_completion_tokens (1024), and semantic_cache_enabled (True).",
+    "expected_symbols": [
+      {
+        "file": "agent/model_gateway.py",
+        "name": "GatewayPolicy"
+      }
+    ],
+    "category": "where_is",
+    "is_smoke": true
+  },
+  {
+    "question": "How does plan_compute determine whether to deliberate or early_exit?",
+    "ground_truth": "plan_compute in agent/adaptive_compute.py inspects incoming ComputeSignals. If uncertainty is unavailable, evidence count is 0 for non-exempt routes, or an unsupported high-risk claim exists, it returns 'abstain'. If grounding passes or is not required, uncertainty decision is release or not_evaluated, and the query is not out-of-distribution, it returns 'early_exit'. Otherwise, it decides 'deliberate' with allocated candidate, token, and latency budgets.",
+    "expected_symbols": [
+      {
+        "file": "agent/adaptive_compute.py",
+        "name": "plan_compute"
+      }
+    ],
+    "category": "how_it_works",
+    "is_smoke": true
+  },
+  {
+    "question": "How does verify_grounding evaluate claim coverage and invalid citations?",
+    "ground_truth": "verify_grounding in agent/grounding.py breaks the generated text into sentences/claims, extracts URL citations, and checks them against the allowlisted evidence items. For each claim, it calculates cosine similarity between claim token/bigram feature embeddings and evidence items. If coverage falls below policy.min_coverage or citations are invalid, it sets passed=False and assigns action 'repair' or 'abstain'.",
+    "expected_symbols": [
+      {
+        "file": "agent/grounding.py",
+        "name": "verify_grounding"
+      }
+    ],
+    "category": "how_it_works",
+    "is_smoke": true
+  },
+  {
+    "question": "How does estimate_tokens approximate token count without credentials?",
+    "ground_truth": "estimate_tokens in agent/model_gateway.py calculates max(1, math.ceil(len(text) / 4)), providing a fast, credential-free, stable 4-characters-per-token heuristic used strictly for admission control and prompt budget validation.",
+    "expected_symbols": [
+      {
+        "file": "agent/model_gateway.py",
+        "name": "estimate_tokens"
+      }
+    ],
+    "category": "how_it_works",
+    "is_smoke": true
+  },
+  {
+    "question": "Who calls plan_compute in the research assistant workflow?",
+    "ground_truth": "build_research_assistant in agent/research_assistant.py configures LangGraph nodes where plan_compute is called after initial retrieval and routing to decide whether the agent should exit early or deliberate over multiple candidates.",
+    "expected_symbols": [
+      {
+        "file": "agent/research_assistant.py",
+        "name": "build_research_assistant"
+      },
+      {
+        "file": "agent/adaptive_compute.py",
+        "name": "plan_compute"
+      }
+    ],
+    "category": "who_calls",
+    "is_smoke": true
+  },
+  {
+    "question": "Where is adaptive compute planning and consensus tested?",
+    "ground_truth": "Adaptive compute planning and consensus selection are tested in tests/test_adaptive_compute.py, covering planner early exit, high-risk escalation, conformal filtering, and candidate consensus selection.",
+    "expected_symbols": [
+      {
+        "file": "tests/test_adaptive_compute.py",
+        "name": "test_planner_early_exits_escalates_and_fails_closed"
+      }
+    ],
+    "category": "where_tested",
+    "is_smoke": true
+  },
+  {
+    "question": "Where is grounding verification and claim repair tested?",
+    "ground_truth": "Grounding verification and claim repair are tested in tests/test_grounding.py, validating supported claims, fabricated citation detection, fail-closed behavior on high-risk claims, and bounded repair.",
+    "expected_symbols": [
+      {
+        "file": "tests/test_grounding.py",
+        "name": "test_supported_claim_and_allowlisted_citation_pass_with_integrity_receipt"
+      }
+    ],
+    "category": "where_tested",
+    "is_smoke": true
+  },
+  {
+    "question": "How does the repository compile CUDA kernels with Triton or NVCC?",
+    "ground_truth": "This codebase does not implement CUDA kernel compilation or Triton GPU kernels. AgentForge is a Python-based research assistant and code intelligence framework focusing on LangGraph orchestration, test-time compute, and grounding verification.",
+    "expected_symbols": [],
+    "category": "negative",
+    "is_smoke": true
+  }
+]

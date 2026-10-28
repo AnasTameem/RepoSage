@@ -10,20 +10,25 @@ on:
 env:
   # Tracing is disabled during CI to reduce noise and latency
   OTEL_TRACING_ENABLED: "false"
-  # Ragas report output path
+  DEEPEVAL_TELEMETRY_OPT_OUT: "YES"
+  # Paths
   RAGAS_REPORT_PATH: eval/ragas_report.json
-  # Minimum acceptable mean scores (CI fails below these)
+  BASELINE_REPORT_PATH: eval/baseline_report.json
+  RETRIEVAL_REPORT_PATH: eval/retrieval_report.json
+  # Absolute minimum thresholds
   MIN_FAITHFULNESS: "0.55"
   MIN_ANSWER_RELEVANCY: "0.55"
+  # Maximum allowable drop below baseline
+  MAX_TOLERANCE_DROP: "0.05"
 
 jobs:
   # ======================================================================
-  #  Job 1: Smoke Tests & DeepEval Regression Tests
+  #  Job 1: Lint & Fast Offline Tests (Free, runs on all pushes & all PRs)
   # ======================================================================
-  regression-tests:
-    name: "DeepEval Regression Tests"
+  lint-and-offline-tests:
+    name: "Lint & Offline Tests"
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -42,10 +47,45 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-groups
 
-      - name: Run smoke tests (no LLM judge, fast)
+      - name: Run Ruff Linter
+        run: uv run ruff check . --output-format=github
+
+      - name: Run Offline Unit Tests (no API keys / mock DB)
+        run: |
+          uv run pytest test/unit/test_eval_offline.py -v -m offline --tb=short
+
+  # ======================================================================
+  #  Job 2: Smoke Tests & Deterministic Retrieval Eval (Fast live DB checks)
+  # ======================================================================
+  smoke-and-retrieval:
+    name: "Smoke & Retrieval Eval"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [lint-and-offline-tests]
+    # Skip live jobs for fork PRs where secrets are unavailable
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Run Smoke Tests (connectivity & shape, no LLM judge)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          QDRANT_HOST: ${{ secrets.QDRANT_HOST || secrets.QDRANT_URL }}
           QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           NEO4J_URI: ${{ secrets.NEO4J_URI }}
@@ -58,10 +98,59 @@ jobs:
             --timeout=120 \
             --junit-xml=reports/smoke_results.xml
 
-      - name: Run DeepEval faithfulness tests
+      - name: Run Deterministic Retrieval Evaluation (Recall@k, MRR, Graph Rescue)
+        env:
+          QDRANT_HOST: ${{ secrets.QDRANT_HOST || secrets.QDRANT_URL }}
+          QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          NEO4J_URI: ${{ secrets.NEO4J_URI }}
+          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+        run: |
+          uv run python eval/retrieval_eval.py \
+            --dataset eval/golden_dataset.json \
+            --output ${{ env.RETRIEVAL_REPORT_PATH }}
+
+      - name: Upload Retrieval Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrieval-evaluation-report
+          path: ${{ env.RETRIEVAL_REPORT_PATH }}
+          retention-days: 30
+
+  # ======================================================================
+  #  Job 3: DeepEval & Ragas Quality Gate (Runs on PRs to protect main)
+  # ======================================================================
+  rag-quality-gate:
+    name: "RAG Quality Gate (DeepEval & Ragas)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [smoke-and-retrieval]
+    # Run only on PRs or manual dispatch (and not external fork PRs)
+    if: (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Run DeepEval Faithfulness & Relevancy Regression Tests
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          QDRANT_HOST: ${{ secrets.QDRANT_HOST || secrets.QDRANT_URL }}
           QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           NEO4J_URI: ${{ secrets.NEO4J_URI }}
@@ -76,47 +165,11 @@ jobs:
             --tb=short \
             --timeout=300 \
             --junit-xml=reports/deepeval_results.xml
-        continue-on-error: false
 
-      - name: Upload test reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-reports
-          path: reports/
-          retention-days: 30
-
-  # ======================================================================
-  #  Job 2: Ragas Offline Evaluation & Quality Gate
-  # ======================================================================
-  ragas-evaluation:
-    name: "Ragas Metrics Gate"
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    # Only run on PRs to main/master to conserve API quota
-    if: github.event_name == 'pull_request'
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: uv sync --all-groups
-
-      - name: Run Ragas evaluation
+      - name: Run Ragas Offline Evaluation
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          QDRANT_HOST: ${{ secrets.QDRANT_HOST || secrets.QDRANT_URL }}
           QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           NEO4J_URI: ${{ secrets.NEO4J_URI }}
@@ -125,39 +178,80 @@ jobs:
         run: |
           uv run python eval/ragas_eval.py \
             --dataset eval/golden_dataset.json \
-            --output ${{ env.RAGAS_REPORT_PATH }} \
-            --top-seeds 2 \
-            --max-hops 1
+            --output ${{ env.RAGAS_REPORT_PATH }}
 
-      - name: Quality gate — enforce minimum metric thresholds
+      - name: Enforce Truthful Quality Gate (Absolute + Baseline Drop)
         run: |
           python - <<'EOF'
-          import json, sys
+          import json, os, sys
 
           report_path = "${{ env.RAGAS_REPORT_PATH }}"
-          min_faithfulness    = float("${{ env.MIN_FAITHFULNESS }}")
+          baseline_path = "${{ env.BASELINE_REPORT_PATH }}"
+          min_faithfulness = float("${{ env.MIN_FAITHFULNESS }}")
           min_answer_relevancy = float("${{ env.MIN_ANSWER_RELEVANCY }}")
+          max_drop = float("${{ env.MAX_TOLERANCE_DROP }}")
+
+          if not os.path.exists(report_path):
+              print(f"[QUALITY GATE FAILED] Report file not found at {report_path}")
+              sys.exit(1)
 
           with open(report_path) as f:
               report = json.load(f)
 
           scores = report.get("mean_scores", {})
-          print("\n=== Ragas Quality Gate ===")
+          n_questions = report.get("n_questions", 0)
+          n_evaluated = report.get("n_evaluated", 0)
+          n_errors = report.get("n_errors", 0)
+
+          print("\n=== Ragas Quality Gate Verification ===")
+          print(f"Total Questions : {n_questions}")
+          print(f"Evaluated       : {n_evaluated}")
+          print(f"Errors          : {n_errors}")
+          print(f"Available Score Keys: {list(scores.keys())}")
           for k, v in scores.items():
-              print(f"  {k}: {v:.4f}")
+              print(f"  {k}: {float(v):.4f}")
 
           failures = []
-          faithfulness = scores.get("faithfulness", scores.get("Faithfulness", None))
-          answer_rel   = scores.get("answer_relevancy", scores.get("AnswerRelevancy", None))
 
-          if faithfulness is not None and faithfulness < min_faithfulness:
-              failures.append(
-                  f"Faithfulness {faithfulness:.4f} < threshold {min_faithfulness}"
-              )
-          if answer_rel is not None and answer_rel < min_answer_relevancy:
-              failures.append(
-                  f"AnswerRelevancy {answer_rel:.4f} < threshold {min_answer_relevancy}"
-              )
+          # Rule 1: Fail if there are execution errors or dropped questions
+          if n_errors > 0:
+              failures.append(f"Evaluation encountered {n_errors} question failure(s). Errors are not allowed to inflate averages.")
+
+          if n_questions > 0 and (n_evaluated / n_questions) < 0.90:
+              failures.append(f"Evaluation completion rate too low ({n_evaluated}/{n_questions} < 90%).")
+
+          # Rule 2: Fail if required scores are missing (no silent pass)
+          faithfulness = scores.get("faithfulness", scores.get("Faithfulness"))
+          answer_rel   = scores.get("answer_relevancy", scores.get("AnswerRelevancy"))
+
+          if faithfulness is None:
+              failures.append("Metric 'faithfulness' was not computed by Ragas.")
+          elif faithfulness < min_faithfulness:
+              failures.append(f"Faithfulness {faithfulness:.4f} < minimum threshold {min_faithfulness}")
+
+          if answer_rel is None:
+              failures.append("Metric 'answer_relevancy' was not computed by Ragas.")
+          elif answer_rel < min_answer_relevancy:
+              failures.append(f"AnswerRelevancy {answer_rel:.4f} < minimum threshold {min_answer_relevancy}")
+
+          # Rule 3: Check against measured baseline if available
+          if os.path.exists(baseline_path):
+              try:
+                  with open(baseline_path) as bf:
+                      baseline = json.load(bf)
+                  b_scores = baseline.get("mean_scores", {})
+                  print("\n--- Comparing Against Baseline ---")
+                  for metric_key, b_val in b_scores.items():
+                      cur_val = scores.get(metric_key, scores.get(metric_key.capitalize()))
+                      if cur_val is not None:
+                          drop = float(b_val) - float(cur_val)
+                          print(f"  {metric_key}: baseline={b_val:.4f}, current={cur_val:.4f}, delta={-drop:+.4f}")
+                          if drop > max_drop:
+                              failures.append(
+                                  f"Regression in '{metric_key}': dropped {drop:.4f} > allowable tolerance {max_drop} (baseline: {b_val:.4f}, current: {cur_val:.4f})"
+                              )
+              except Exception as exc:
+                  print(f"Warning: could not parse baseline report ({exc})")
 
           if failures:
               print("\n[QUALITY GATE FAILED]")
@@ -165,10 +259,10 @@ jobs:
                   print(f"  - {msg}")
               sys.exit(1)
           else:
-              print("\n[QUALITY GATE PASSED] All metrics above thresholds.")
+              print("\n[QUALITY GATE PASSED] All metrics and regression checks passed.")
           EOF
 
-      - name: Upload Ragas report
+      - name: Upload Ragas Evaluation Report
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -176,7 +270,7 @@ jobs:
           path: ${{ env.RAGAS_REPORT_PATH }}
           retention-days: 90
 
-      - name: Comment PR with Ragas scores
+      - name: Comment PR with Ragas Scores
         if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
@@ -184,16 +278,24 @@ jobs:
             const fs = require('fs');
             let body = '## RAG Quality Gate Results\n\n';
             try {
-              const report = JSON.parse(fs.readFileSync(process.env.RAGAS_REPORT_PATH, 'utf8'));
-              const scores = report.mean_scores || {};
-              body += '| Metric | Score |\n|---|---|\n';
-              for (const [k, v] of Object.entries(scores)) {
-                const emoji = v >= 0.6 ? '✅' : v >= 0.5 ? '⚠️' : '❌';
-                body += `| ${k} | ${emoji} ${parseFloat(v).toFixed(4)} |\n`;
+              if (fs.existsSync(process.env.RAGAS_REPORT_PATH)) {
+                const report = JSON.parse(fs.readFileSync(process.env.RAGAS_REPORT_PATH, 'utf8'));
+                const scores = report.mean_scores || {};
+                body += '| Metric | Score |\n|---|---|\n';
+                for (const [k, v] of Object.entries(scores)) {
+                  const num = parseFloat(v);
+                  const emoji = num >= 0.60 ? '✅' : num >= 0.55 ? '⚠️' : '❌';
+                  body += `| ${k} | ${emoji} ${num.toFixed(4)} |\n`;
+                }
+                body += `\n**Evaluation Stats:**\n`;
+                body += `- Completed: ${report.n_evaluated} / ${report.n_questions} questions\n`;
+                body += `- Errors: ${report.n_errors}\n`;
+                body += `- Timestamp: ${report.run_timestamp}\n`;
+              } else {
+                body += '⚠️ Evaluation report not found.';
               }
-              body += `\n_Evaluated ${report.n_evaluated}/${report.n_questions} questions • ${report.run_timestamp}_`;
             } catch (e) {
-              body += `⚠️ Could not parse Ragas report: ${e.message}`;
+              body += `⚠️ Could not parse evaluation report: ${e.message}`;
             }
             github.rest.issues.createComment({
               issue_number: context.issue.number,
@@ -203,15 +305,3 @@ jobs:
             });
         env:
           RAGAS_REPORT_PATH: ${{ env.RAGAS_REPORT_PATH }}
-
-  # ======================================================================
-  #  Job 3: Lint
-  # ======================================================================
-  lint:
-    name: "Ruff Lint"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
-      - run: uv sync --all-groups
-      - run: uv run ruff check . --output-format=github

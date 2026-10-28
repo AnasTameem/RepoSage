@@ -3,19 +3,20 @@ generator.py - LLM response generation using Google Gemini.
 
 Provides asynchronous answer generation and streaming for codebase RAG queries.
 """
-import os
-import sys
 import asyncio
 import logging
+import os
+import sys
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Optional, List, Dict, AsyncIterator
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
-    from config import GEMINI_API_KEY as CFG_GEMINI_API_KEY, GEMINI_MODEL as CFG_GEMINI_MODEL
+    from config import GEMINI_API_KEY as CFG_GEMINI_API_KEY
+    from config import GEMINI_MODEL as CFG_GEMINI_MODEL
 except ImportError:
     CFG_GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     CFG_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
@@ -23,6 +24,7 @@ except ImportError:
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError, ClientError, ServerError
+
 from llm.prompt_templates import CODEBASE_RAG_SYSTEM_PROMPT, build_user_prompt
 
 logger = logging.getLogger(__name__)
@@ -45,12 +47,12 @@ class ResponseGenerator:
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        model: Optional[str] = None,
+        api_key: str | None = None,
+        model: str | None = None,
     ):
         self.api_key = api_key or CFG_GEMINI_API_KEY or os.getenv("GEMINI_API_KEY", "")
         self.model = model or CFG_GEMINI_MODEL or DEFAULT_MODEL
-        self._client: Optional[genai.Client] = None
+        self._client: genai.Client | None = None
 
     def _get_client(self) -> genai.Client:
         if not self._client:
@@ -85,7 +87,7 @@ class ResponseGenerator:
         self,
         query: str,
         context: str,
-        history: Optional[List[Dict[str, str]]] = None,
+        history: list[dict[str, str]] | None = None,
         temperature: float = 0.2,
         max_tokens: int = 2048,
     ) -> str:
@@ -122,7 +124,7 @@ class ResponseGenerator:
         self,
         query: str,
         context: str,
-        history: Optional[List[Dict[str, str]]] = None,
+        history: list[dict[str, str]] | None = None,
         temperature: float = 0.2,
         max_tokens: int = 2048,
     ) -> AsyncIterator[str]:

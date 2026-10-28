@@ -1,42 +1,410 @@
 [
   {
-    "question": "How does the Retrieval class embed a query for Qdrant search?",
-    "ground_truth": "The Retrieval class uses the Voyage AI client (voyage-code-3 model) to generate dense vector embeddings for a query string, then submits those embeddings to Qdrant for cosine similarity search via the async qdrant_client."
+    "question": "Where is ComputePolicy defined and what default parameters does it set?",
+    "ground_truth": "ComputePolicy is defined in agent/adaptive_compute.py. It specifies test-time compute budget parameters including max_candidates (default 3), max_extra_tokens (default 1800), max_latency_ms (default 15000), min_confidence_gain (0.04), min_consensus (0.5), and high_risk_min_consensus (0.67).",
+    "expected_symbols": [
+      {
+        "file": "agent/adaptive_compute.py",
+        "name": "ComputePolicy"
+      }
+    ],
+    "category": "where_is",
+    "is_smoke": true
   },
   {
-    "question": "What graph relationships does Neo4j traversal follow in GraphTraversal?",
-    "ground_truth": "GraphTraversal follows CALLS, CONTAINS, and INHERITS_FROM relationships in Neo4j to expand from seed nodes to adjacent nodes during multi-hop traversal."
+    "question": "Where is ClaimAssessment defined and what attributes does it track?",
+    "ground_truth": "ClaimAssessment is defined in agent/grounding.py. It tracks claim-level verification details including claim_index, claim text, claim_fingerprint, best_evidence_id, support_score, supported flag, high_risk flag, citation_urls, and invalid_citation_urls.",
+    "expected_symbols": [
+      {
+        "file": "agent/grounding.py",
+        "name": "ClaimAssessment"
+      }
+    ],
+    "category": "where_is",
+    "is_smoke": true
   },
   {
-    "question": "How does ResponseGenerator fall back to an alternative Gemini model?",
-    "ground_truth": "ResponseGenerator maintains a FALLBACK_MODELS list. If a model call raises a ClientError, ServerError, or APIError with status code 429 or 503, or the error message contains 'demand', it sleeps for 1 second and retries with the next model in the list."
+    "question": "Where is GatewayPolicy defined and what budget limits does it configure?",
+    "ground_truth": "GatewayPolicy is defined in agent/model_gateway.py. It configures LLM inference gateway limits including version ('inference-policy-v1'), daily_budget_usd (default $5), max_prompt_tokens (16000), max_completion_tokens (1024), and semantic_cache_enabled (True).",
+    "expected_symbols": [
+      {
+        "file": "agent/model_gateway.py",
+        "name": "GatewayPolicy"
+      }
+    ],
+    "category": "where_is",
+    "is_smoke": true
   },
   {
-    "question": "What SSE event types does the FastAPI /api/v1/query endpoint emit?",
-    "ground_truth": "The endpoint emits five SSE event types: 'status' for pipeline stage updates, 'context' with retrieved seeds and graph relations metadata, 'token' for each streaming text chunk, 'done' when generation completes, and 'error' on failure."
+    "question": "Where is open_conversation_store implemented and what storage backends does it support?",
+    "ground_truth": "open_conversation_store is implemented in service/persistence_store.py. It initializes and returns a conversation store instance, supporting SQLite (SQLiteConversationStore) for local persistent state and PostgreSQL (PostgresConversationStore) when a postgres connection string is provided.",
+    "expected_symbols": [
+      {
+        "file": "service/persistence_store.py",
+        "name": "open_conversation_store"
+      }
+    ],
+    "category": "where_is",
+    "is_smoke": false
   },
   {
-    "question": "How is session history maintained across multi-turn conversations?",
-    "ground_truth": "Session history is maintained in an in-memory defaultdict called session_store, keyed by session_id. Each session stores a query_history list of effective queries and a chat_history list of user/assistant message dicts, both updated after each successful generation."
+    "question": "Where is ChatMessage defined in the API schemas?",
+    "ground_truth": "ChatMessage is defined in schema/schema.py as a Pydantic model representing an individual message in a chat conversation, containing role, content, and optional metadata.",
+    "expected_symbols": [
+      {
+        "file": "schema/schema.py",
+        "name": "ChatMessage"
+      }
+    ],
+    "category": "where_is",
+    "is_smoke": false
   },
   {
-    "question": "What is the purpose of the build_context_window function?",
-    "ground_truth": "build_context_window compiles a formatted string prompt window from a list of expanded graph traversal result blocks, concatenating seed code snippets and their adjacent node code to form the context injected into the Gemini prompt."
+    "question": "Where is CodingAgent defined and what is its role?",
+    "ground_truth": "CodingAgent is defined in code_agent/agent.py as the primary software engineering agent class managing planning, code execution, workspace sandboxing, and patch generation.",
+    "expected_symbols": [
+      {
+        "file": "code_agent/agent.py",
+        "name": "CodingAgent"
+      }
+    ],
+    "category": "where_is",
+    "is_smoke": false
   },
   {
-    "question": "How does the Streamlit app render streaming tokens from the FastAPI backend?",
-    "ground_truth": "The Streamlit app uses requests.post with stream=True to receive the SSE response, iterates over iter_lines(), parses lines prefixed with 'data: ' as JSON, and accumulates 'token' event payloads into a live text placeholder updated in real time."
+    "question": "Where is CostAwareRouter defined and what is its purpose?",
+    "ground_truth": "CostAwareRouter is defined in evals/adaptive_router.py. It evaluates and routes queries based on predicted query difficulty and model cost to balance response quality against inference expenditure.",
+    "expected_symbols": [
+      {
+        "file": "evals/adaptive_router.py",
+        "name": "CostAwareRouter"
+      }
+    ],
+    "category": "where_is",
+    "is_smoke": false
   },
   {
-    "question": "What happens when Neo4j is unavailable during startup?",
-    "ground_truth": "During the FastAPI lifespan startup, if graph.connect() raises an exception (e.g., DNS resolution failure for Neo4j Aura), the error is caught and logged as a warning, and the application continues with vector-only retrieval fallback."
+    "question": "Where is EvidenceQualityPolicy defined in the agent package?",
+    "ground_truth": "EvidenceQualityPolicy is defined in agent/evidence_quality.py to define validation rules, minimum domain authority thresholds, and conflict adjudication criteria for retrieved evidence.",
+    "expected_symbols": [
+      {
+        "file": "agent/evidence_quality.py",
+        "name": "EvidenceQualityPolicy"
+      }
+    ],
+    "category": "where_is",
+    "is_smoke": false
   },
   {
-    "question": "How is the Qdrant search configured to ensure exact results?",
-    "ground_truth": "The Retrieval class passes SearchParams(exact=True) when calling the Qdrant async client's search method, which forces an exact flat-scan rather than approximate nearest-neighbor search for deterministic results."
+    "question": "How does plan_compute determine whether to deliberate or early_exit?",
+    "ground_truth": "plan_compute in agent/adaptive_compute.py inspects incoming ComputeSignals. If uncertainty is unavailable, evidence count is 0 for non-exempt routes, or an unsupported high-risk claim exists, it returns 'abstain'. If grounding passes or is not required, uncertainty decision is release or not_evaluated, and the query is not out-of-distribution, it returns 'early_exit'. Otherwise, it decides 'deliberate' with allocated candidate, token, and latency budgets.",
+    "expected_symbols": [
+      {
+        "file": "agent/adaptive_compute.py",
+        "name": "plan_compute"
+      }
+    ],
+    "category": "how_it_works",
+    "is_smoke": true
   },
   {
-    "question": "What Gemini model is used by default and what is the primary fallback?",
-    "ground_truth": "The default model is gemini-3.5-flash-lite. The primary fallback is gemini-3.5-flash, followed by gemini-3.8-flash and gemini-3.7-flash as further fallbacks."
+    "question": "How does verify_grounding evaluate claim coverage and invalid citations?",
+    "ground_truth": "verify_grounding in agent/grounding.py breaks the generated text into sentences/claims, extracts URL citations, and checks them against the allowlisted evidence items. For each claim, it calculates cosine similarity between claim token/bigram feature embeddings and evidence items. If coverage falls below policy.min_coverage or citations are invalid, it sets passed=False and assigns action 'repair' or 'abstain'.",
+    "expected_symbols": [
+      {
+        "file": "agent/grounding.py",
+        "name": "verify_grounding"
+      }
+    ],
+    "category": "how_it_works",
+    "is_smoke": true
+  },
+  {
+    "question": "How does estimate_tokens approximate token count without credentials?",
+    "ground_truth": "estimate_tokens in agent/model_gateway.py calculates max(1, math.ceil(len(text) / 4)), providing a fast, credential-free, stable 4-characters-per-token heuristic used strictly for admission control and prompt budget validation.",
+    "expected_symbols": [
+      {
+        "file": "agent/model_gateway.py",
+        "name": "estimate_tokens"
+      }
+    ],
+    "category": "how_it_works",
+    "is_smoke": true
+  },
+  {
+    "question": "How does select_candidate choose the winning candidate during deliberation?",
+    "ground_truth": "select_candidate in agent/adaptive_compute.py filters candidate assessments for groundedness, release decision under conformal uncertainty, and consensus threshold. Among eligible candidates meeting policy consensus requirements, it selects the candidate that maximizes consensus agreement and confidence score while staying within latency and token budgets.",
+    "expected_symbols": [
+      {
+        "file": "agent/adaptive_compute.py",
+        "name": "select_candidate"
+      }
+    ],
+    "category": "how_it_works",
+    "is_smoke": false
+  },
+  {
+    "question": "How does repair_answer handle ungrounded claims?",
+    "ground_truth": "repair_answer in agent/grounding.py removes or rewrites unsupported sentences that failed claim verification, removes invalid citation markdown links, and appends remaining verified citations to produce a fail-closed, grounded output.",
+    "expected_symbols": [
+      {
+        "file": "agent/grounding.py",
+        "name": "repair_answer"
+      }
+    ],
+    "category": "how_it_works",
+    "is_smoke": false
+  },
+  {
+    "question": "How does InferenceGateway handle circuit breaker trips and provider cooldown?",
+    "ground_truth": "InferenceGateway in agent/model_gateway.py maintains consecutive failure counts per provider. When failures reach failure_threshold, the circuit breaker opens into a tripped state. Further requests skip the failing provider until cooldown_seconds elapses, after which a probe request tests provider recovery.",
+    "expected_symbols": [
+      {
+        "file": "agent/model_gateway.py",
+        "name": "InferenceGateway"
+      }
+    ],
+    "category": "how_it_works",
+    "is_smoke": false
+  },
+  {
+    "question": "How does extract_memory_candidates parse user corrections into memories?",
+    "ground_truth": "extract_memory_candidates in agent/memory.py scans conversation turns for user feedback patterns, corrections, and explicit preferences, structuring them into MemoryCandidate records with key, value, and confidence metrics.",
+    "expected_symbols": [
+      {
+        "file": "agent/memory.py",
+        "name": "extract_memory_candidates"
+      }
+    ],
+    "category": "how_it_works",
+    "is_smoke": false
+  },
+  {
+    "question": "How does adjudicate_evidence score retrieved evidence items in evidence_quality.py?",
+    "ground_truth": "adjudicate_evidence in agent/evidence_quality.py evaluates evidence candidates by domain authority, text length, token overlap, and consistency against known facts, flagging contradictory evidence items and producing an EvidenceQualityReport.",
+    "expected_symbols": [
+      {
+        "file": "agent/evidence_quality.py",
+        "name": "adjudicate_evidence"
+      }
+    ],
+    "category": "how_it_works",
+    "is_smoke": false
+  },
+  {
+    "question": "How does parse_llama_guard_output assess prompt and response safety?",
+    "ground_truth": "parse_llama_guard_output in agent/llama_guard.py parses the raw LLM response from the Llama Guard safety model, detecting whether the first token is 'safe' or 'unsafe' and extracting the specific hazard categories (e.g. S1, S2) into a SafetyAssessment object.",
+    "expected_symbols": [
+      {
+        "file": "agent/llama_guard.py",
+        "name": "parse_llama_guard_output"
+      }
+    ],
+    "category": "how_it_works",
+    "is_smoke": false
+  },
+  {
+    "question": "How does selective_decision in uncertainty.py decide whether to release or abstain?",
+    "ground_truth": "selective_decision in agent/uncertainty.py evaluates prediction set size and conformal non-conformity scores against calibrated quantile thresholds; if the prediction set contains multiple conflicting labels or exceeds ambiguity bounds, it triggers an 'abstain' decision.",
+    "expected_symbols": [
+      {
+        "file": "agent/uncertainty.py",
+        "name": "selective_decision"
+      }
+    ],
+    "category": "how_it_works",
+    "is_smoke": false
+  },
+  {
+    "question": "Who calls plan_compute in the research assistant workflow?",
+    "ground_truth": "build_research_assistant in agent/research_assistant.py configures LangGraph nodes where plan_compute is called after initial retrieval and routing to decide whether the agent should exit early or deliberate over multiple candidates.",
+    "expected_symbols": [
+      {
+        "file": "agent/research_assistant.py",
+        "name": "build_research_assistant"
+      },
+      {
+        "file": "agent/adaptive_compute.py",
+        "name": "plan_compute"
+      }
+    ],
+    "category": "who_calls",
+    "is_smoke": true
+  },
+  {
+    "question": "Who invokes verify_grounding to validate generated responses?",
+    "ground_truth": "The LangGraph agent graph in agent/research_assistant.py calls verify_grounding during the post-generation verification phase to validate candidate claims against evidence before releasing answers to the user.",
+    "expected_symbols": [
+      {
+        "file": "agent/research_assistant.py",
+        "name": "build_research_assistant"
+      },
+      {
+        "file": "agent/grounding.py",
+        "name": "verify_grounding"
+      }
+    ],
+    "category": "who_calls",
+    "is_smoke": false
+  },
+  {
+    "question": "Who calls open_conversation_store to manage chat persistence?",
+    "ground_truth": "service/service.py invokes open_conversation_store during FastAPI lifespan startup to initialize the persistent conversation database and manage chat history across user sessions.",
+    "expected_symbols": [
+      {
+        "file": "service/service.py",
+        "name": "open_conversation_store"
+      }
+    ],
+    "category": "who_calls",
+    "is_smoke": false
+  },
+  {
+    "question": "Who calls get_memory_store to persist extracted agent memories?",
+    "ground_truth": "service/service.py calls get_memory_store to retrieve the active memory store instance and persist extracted memories after user interactions.",
+    "expected_symbols": [
+      {
+        "file": "service/service.py",
+        "name": "get_memory_store"
+      }
+    ],
+    "category": "who_calls",
+    "is_smoke": false
+  },
+  {
+    "question": "Who mounts code_agent_router in the FastAPI application?",
+    "ground_truth": "service/service.py imports router as code_agent_router from code_agent.api and mounts it onto the main FastAPI application when CODE_AGENT_ENABLED is True.",
+    "expected_symbols": [
+      {
+        "file": "service/service.py",
+        "name": "code_agent_router"
+      }
+    ],
+    "category": "who_calls",
+    "is_smoke": false
+  },
+  {
+    "question": "Who uses CostAwareRouter to direct query traffic?",
+    "ground_truth": "service/service.py uses CostAwareRouter from evals.adaptive_router to route incoming chat queries between fast and deliberate model backends based on evaluated complexity.",
+    "expected_symbols": [
+      {
+        "file": "service/service.py",
+        "name": "CostAwareRouter"
+      }
+    ],
+    "category": "who_calls",
+    "is_smoke": false
+  },
+  {
+    "question": "Where is adaptive compute planning and consensus tested?",
+    "ground_truth": "Adaptive compute planning and consensus selection are tested in tests/test_adaptive_compute.py, covering planner early exit, high-risk escalation, conformal filtering, and candidate consensus selection.",
+    "expected_symbols": [
+      {
+        "file": "tests/test_adaptive_compute.py",
+        "name": "test_planner_early_exits_escalates_and_fails_closed"
+      }
+    ],
+    "category": "where_tested",
+    "is_smoke": true
+  },
+  {
+    "question": "Where is grounding verification and claim repair tested?",
+    "ground_truth": "Grounding verification and claim repair are tested in tests/test_grounding.py, validating supported claims, fabricated citation detection, fail-closed behavior on high-risk claims, and bounded repair.",
+    "expected_symbols": [
+      {
+        "file": "tests/test_grounding.py",
+        "name": "test_supported_claim_and_allowlisted_citation_pass_with_integrity_receipt"
+      }
+    ],
+    "category": "where_tested",
+    "is_smoke": true
+  },
+  {
+    "question": "Where is model gateway circuit breaking and canary routing tested?",
+    "ground_truth": "Model gateway features are tested in tests/test_model_gateway.py, including test_canary_assignment_is_deterministic_and_high_risk_is_excluded and live gateway fingerprint key validation.",
+    "expected_symbols": [
+      {
+        "file": "tests/test_model_gateway.py",
+        "name": "test_canary_assignment_is_deterministic_and_high_risk_is_excluded"
+      }
+    ],
+    "category": "where_tested",
+    "is_smoke": false
+  },
+  {
+    "question": "Where is conformal uncertainty calibration tested?",
+    "ground_truth": "Conformal uncertainty calibration is tested in tests/test_uncertainty.py, including test_mondrian_calibrator_is_reproducible_integrity_bound_and_route_aware and selective decision release tests.",
+    "expected_symbols": [
+      {
+        "file": "tests/test_uncertainty.py",
+        "name": "test_mondrian_calibrator_is_reproducible_integrity_bound_and_route_aware"
+      }
+    ],
+    "category": "where_tested",
+    "is_smoke": false
+  },
+  {
+    "question": "Where are service API endpoints and authentication hardened and tested?",
+    "ground_truth": "Service hardening, authentication, and API endpoints are tested in tests/test_service_hardening.py.",
+    "expected_symbols": [
+      {
+        "file": "tests/test_service_hardening.py",
+        "name": "test_service"
+      }
+    ],
+    "category": "where_tested",
+    "is_smoke": false
+  },
+  {
+    "question": "Where is evidence quality adjudication tested?",
+    "ground_truth": "Evidence quality adjudication and conflict detection are tested in tests/test_evidence_quality.py.",
+    "expected_symbols": [
+      {
+        "file": "tests/test_evidence_quality.py",
+        "name": "test_evidence_quality"
+      }
+    ],
+    "category": "where_tested",
+    "is_smoke": false
+  },
+  {
+    "question": "Where is the CodeAgent software engineering execution tested?",
+    "ground_truth": "The CodeAgent execution, workspace sandbox, and code intelligence are tested in tests/test_code_agent.py and tests/test_code_execution.py.",
+    "expected_symbols": [
+      {
+        "file": "tests/test_code_agent.py",
+        "name": "test_code_agent"
+      }
+    ],
+    "category": "where_tested",
+    "is_smoke": false
+  },
+  {
+    "question": "How does the repository compile CUDA kernels with Triton or NVCC?",
+    "ground_truth": "This codebase does not implement CUDA kernel compilation or Triton GPU kernels. AgentForge is a Python-based research assistant and code intelligence framework focusing on LangGraph orchestration, test-time compute, and grounding verification.",
+    "expected_symbols": [],
+    "category": "negative",
+    "is_smoke": true
+  },
+  {
+    "question": "Where is the Kubernetes Helm operator for Redis cluster deployment located?",
+    "ground_truth": "This codebase does not contain a Kubernetes Helm operator or Redis cluster deployment scripts. Persistence is managed via local SQLite and PostgreSQL stores, and deployment does not use Kubernetes Helm charts.",
+    "expected_symbols": [],
+    "category": "negative",
+    "is_smoke": false
+  },
+  {
+    "question": "How does the GraphQL federation gateway resolve entity subgraphs?",
+    "ground_truth": "This codebase does not implement a GraphQL federation gateway or GraphQL schemas. All service endpoints are built using FastAPI REST and Server-Sent Events (SSE).",
+    "expected_symbols": [],
+    "category": "negative",
+    "is_smoke": false
+  },
+  {
+    "question": "Where is the Solidity smart contract for decentralized token staking located?",
+    "ground_truth": "This codebase does not implement blockchain smart contracts, Web3 integrations, or decentralized token staking.",
+    "expected_symbols": [],
+    "category": "negative",
+    "is_smoke": false
   }
 ]

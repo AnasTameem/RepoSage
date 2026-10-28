@@ -6,57 +6,104 @@ Provides REST and Server-Sent Events (SSE) streaming endpoints for:
   - Qdrant dense vector search
   - Neo4j 1-2 hop graph expansion
   - Google Gemini streaming answer generation
+
+Guardrails (patch 2)
+--------------------
+  - Per-IP sliding-window rate limit (RATE_LIMIT_RPM req/min)
+  - Query length cap (QUERY_MAX_CHARS)
+  - Secret redaction in retrieved code before prompt injection
+  - Citation check on finished answers
+  - Sanitized error messages (no raw str(exc) to clients)
+  - Tighter CORS (CORS_ALLOWED_ORIGINS, not wildcard)
+  - Session count and history size caps
+
+Request Metrics (patch 2)
+--------------------------
+  - Per-stage Prometheus histograms (retrieval / graph / first_token / total)
+  - Token counts (prompt + completion) and estimated USD cost
+  - Error and fallback counters
+  - GET /metrics endpoint (Prometheus text format)
 """
-import sys
 import json
 import logging
-import asyncio
-from pathlib import Path
-from collections import defaultdict
+import sys
+import time
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import List, Optional, Dict, Any, AsyncGenerator
+from pathlib import Path
+from typing import Any
 
-# Observability — import before any instrumented clients are created
+# ── Observability ────────────────────────────────────────────────────────────
 try:
     from observability.tracing import setup_tracing, shutdown_tracing
 except ImportError:
-    def setup_tracing(**kwargs): pass  # type: ignore
-    def shutdown_tracing(): pass      # type: ignore
+    def setup_tracing(**kwargs): pass   # type: ignore[misc]
+    def shutdown_tracing(): pass        # type: ignore[misc]
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from retrieval.retrieve import Retrieval
-from retrieval.graph_traversal import GraphTraversal, build_context_window
+from config import (
+    CORS_ALLOWED_ORIGINS,
+    DEFAULT_MAX_HOPS,
+    DEFAULT_TOP_SEEDS,
+    MAX_HISTORY_TURNS,
+    MAX_SESSIONS,
+    QUERY_MAX_CHARS,
+    RATE_LIMIT_RPM,
+)
+from guardrails.citation_check import check_citations
+from guardrails.rate_limiter import RateLimiter
+from guardrails.redactor import redact_error, redact_secrets
 from llm.generator import ResponseGenerator
+from llm.rag_pipeline import retrieve_and_expand
+from metrics.request_metrics import (
+    ACTIVE_SESSIONS,
+    CITATION_ISSUES,
+    ERROR_COUNTER,
+    FALLBACK_COUNTER,
+    REQUEST_TOTAL,
+    SECRETS_REDACTED,
+    STAGE_LATENCY,
+    estimate_tokens,
+    record_tokens,
+)
+from retrieval.graph_traversal import GraphTraversal
+from retrieval.retrieve import Retrieval
 
 logger = logging.getLogger(__name__)
 
-# Shared application singletons
-retriever: Optional[Retrieval] = None
-graph: Optional[GraphTraversal] = None
-generator: Optional[ResponseGenerator] = None
+# ── Singletons ───────────────────────────────────────────────────────────────
+retriever: Retrieval | None = None
+graph: GraphTraversal | None = None
+generator: ResponseGenerator | None = None
 
-# Multi-turn conversation store per session_id
-session_store: Dict[str, Dict[str, List[Any]]] = defaultdict(
-    lambda: {"query_history": [], "chat_history": []}
-)
+# ── Rate limiter ─────────────────────────────────────────────────────────────
+_rate_limiter = RateLimiter(rpm=RATE_LIMIT_RPM)
+
+from guardrails.session_store import SessionStore
+
+# Alias for backward-compat
+_SessionStore = SessionStore
+_sessions = SessionStore(max_sessions=MAX_SESSIONS, max_history_turns=MAX_HISTORY_TURNS)
 
 
+
+# ── Lifespan ─────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global retriever, graph, generator
 
-    # Initialize distributed tracing BEFORE any instrumented clients are created
     setup_tracing(service_name="reposage-rag")
-
     logger.info("[API] Initializing Codebase RAG services...")
+
     retriever = Retrieval()
     graph = GraphTraversal(retriever=retriever)
     generator = ResponseGenerator()
@@ -66,67 +113,98 @@ async def lifespan(app: FastAPI):
         await graph.connect()
     except Exception as exc:
         logger.warning(
-            f"[API Startup] Neo4j graph database unavailable ({exc}). Continuing with vector retrieval fallback."
+            "[API Startup] Neo4j unavailable (%s). Vector-only fallback active.",
+            type(exc).__name__,
         )
+        FALLBACK_COUNTER.labels(reason="neo4j_unavailable").inc()
 
     yield
 
-    logger.info("[API] Shutting down Codebase RAG services...")
+    logger.info("[API] Shutting down services...")
     if graph:
         await graph.close()
     if retriever:
         await retriever.close()
     if generator:
         await generator.close()
-
-    # Flush remaining spans before process exits
     shutdown_tracing()
 
 
+# ── Application ───────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="RepoSage - Codebase RAG API",
-    description="FastAPI Backend for Codebase RAG with SSE streaming powered by Qdrant, Neo4j, and Google Gemini.",
-    version="1.0.0",
+    title="RepoSage – Codebase RAG API",
+    description=(
+        "SSE-streaming RAG pipeline backed by Qdrant, Neo4j, and Google Gemini. "
+        "Includes per-IP rate limiting, secret redaction, citation checks, and "
+        "Prometheus metrics at /metrics."
+    ),
+    version="1.1.0",
     lifespan=lifespan,
 )
 
+# ── CORS ─────────────────────────────────────────────────────────────────────
+# Default: only the Streamlit frontend.  Override via CORS_ALLOWED_ORIGINS env var.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
-# --------------------------------------------------------------------------- #
-#  Schemas
-# --------------------------------------------------------------------------- #
+# ── Schemas ───────────────────────────────────────────────────────────────────
 class QueryRequest(BaseModel):
-    query: str = Field(..., min_length=1, description="Natural language question about the codebase")
-    session_id: str = Field(default="default", description="Conversation session ID for multi-turn history")
-    top_seeds: int = Field(default=2, ge=1, le=10, description="Number of primary Qdrant seeds to retrieve")
-    max_hops: int = Field(default=2, ge=1, le=3, description="Maximum graph traversal hops in Neo4j")
-    score_threshold: Optional[float] = Field(default=None, description="Optional minimum cosine similarity score")
+    query: str = Field(..., min_length=1, max_length=QUERY_MAX_CHARS,
+                       description="Natural language question about the codebase")
+    session_id: str = Field(default="default",
+                             description="Conversation session ID for multi-turn history")
+    top_seeds: int = Field(default=DEFAULT_TOP_SEEDS, ge=1, le=10,
+                           description="Number of Qdrant seeds to retrieve")
+    max_hops: int = Field(default=DEFAULT_MAX_HOPS, ge=1, le=3,
+                          description="Maximum Neo4j graph traversal hops")
+    score_threshold: float | None = Field(default=None,
+                                              description="Minimum cosine similarity score")
 
 
 class SessionResetRequest(BaseModel):
     session_id: str = Field(default="default")
 
 
-# --------------------------------------------------------------------------- #
-#  Health & Discovery Endpoints
-# --------------------------------------------------------------------------- #
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def _sse(data: dict[str, Any]) -> str:
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _client_ip(request: Request) -> str:
+    """Best-effort client IP (respects X-Forwarded-For from trusted proxies)."""
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        return xff.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
+# ── Prometheus endpoint ───────────────────────────────────────────────────────
+@app.get("/metrics", include_in_schema=False)
+async def metrics_endpoint():
+    """Prometheus scrape endpoint."""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+# ── Health & Discovery ────────────────────────────────────────────────────────
 @app.get("/")
 async def root():
     return {
         "app": "RepoSage Codebase RAG API",
         "status": "online",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "endpoints": {
             "query_stream": "POST /api/v1/query",
             "health": "GET /api/v1/health",
             "reset_session": "POST /api/v1/sessions/reset",
+            "metrics": "GET /metrics",
             "docs": "/docs",
         },
     }
@@ -135,6 +213,7 @@ async def root():
 @app.get("/health")
 @app.get("/api/v1/health")
 async def health_check():
+    ACTIVE_SESSIONS.set(len(_sessions))
     return {
         "status": "healthy",
         "services": {
@@ -143,206 +222,221 @@ async def health_check():
             "llm_engine": generator.model if generator else "uninitialized",
             "embedding_model": retriever.embedding_model if retriever else "uninitialized",
         },
-        "active_sessions": len(session_store),
+        "active_sessions": len(_sessions),
+        "rate_limit_rpm": RATE_LIMIT_RPM,
+        "query_max_chars": QUERY_MAX_CHARS,
     }
 
 
 @app.post("/api/v1/sessions/reset")
 async def reset_session(request: SessionResetRequest):
-    if request.session_id in session_store:
-        session_store[request.session_id] = {"query_history": [], "chat_history": []}
+    _sessions.reset(request.session_id)
     return {"status": "reset", "session_id": request.session_id}
 
 
-# --------------------------------------------------------------------------- #
-#  SSE Streaming Endpoint (/api/v1/query)
-# --------------------------------------------------------------------------- #
-def _format_sse_event(data: Dict[str, Any]) -> str:
-    """Format dictionary as Server-Sent Event data block."""
-    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+# ── SSE Generator ─────────────────────────────────────────────────────────────
+async def _rag_stream_generator(
+    request: QueryRequest,
+    client_ip: str,
+) -> AsyncGenerator[str, None]:
+    t_total_start = time.perf_counter()
 
-
-async def _rag_stream_generator(request: QueryRequest) -> AsyncGenerator[str, None]:
     if not retriever or not graph or not generator:
-        yield _format_sse_event({
+        ERROR_COUNTER.labels(category="internal").inc()
+        yield _sse({"type": "error", "error": "RAG pipeline services are not initialized."})
+        return
+
+    # ── Guardrail: rate limit ────────────────────────────────────────────────
+    if not _rate_limiter.is_allowed(client_ip):
+        REQUEST_TOTAL.labels(status="rate_limited").inc()
+        ERROR_COUNTER.labels(category="guardrail").inc()
+        yield _sse({
             "type": "error",
-            "error": "RAG pipeline services are not initialized."
+            "error": f"Rate limit exceeded. Maximum {RATE_LIMIT_RPM} requests per minute.",
         })
         return
 
-    session = session_store[request.session_id]
-    query_history = session["query_history"]
-    chat_history = session["chat_history"]
+    session = _sessions.get(request.session_id)
+    query_history: list[str] = session["query_history"]
+    chat_history: list[dict[str, str]] = session["chat_history"]
 
-    effective_query = request.query
-
-    # Step 1: Contextualize Query (if multi-turn history exists)
+    # Status notifications
     if query_history:
-        yield _format_sse_event({
+        yield _sse({
             "type": "status",
             "stage": "contextualize",
-            "message": "Reformulating query based on prior conversation context...",
+            "message": "Reformulating query based on prior conversation...",
         })
-        try:
-            effective_query = await retriever.contextualize_query(request.query, query_history)
-        except Exception as exc:
-            logger.warning(f"[API] Contextualization fallback: {exc}")
-            effective_query = request.query
 
-    # Step 2: Retrieve Top-k Seeds from Qdrant
-    yield _format_sse_event({
+    yield _sse({
         "type": "status",
         "stage": "retrieval",
-        "message": f"Searching Top-{request.top_seeds} primary vector seeds in Qdrant...",
-        "effective_query": effective_query,
+        "message": f"Searching top-{request.top_seeds} vector seeds in Qdrant...",
+    })
+    yield _sse({
+        "type": "status",
+        "stage": "graph_expansion",
+        "message": f"Expanding seeds in Neo4j (1–{request.max_hops} hops)...",
     })
 
+    # ── Retrieval + graph expansion ──────────────────────────────────────────
+    t_retrieval_start = time.perf_counter()
     try:
-        q_results = await retriever.retrieve(
-            effective_query,
-            limit=request.top_seeds,
+        retrieval_data = await retrieve_and_expand(
+            query=request.query,
+            retriever=retriever,
+            graph=graph,
+            query_history=query_history,
+            top_seeds=request.top_seeds,
+            max_hops=request.max_hops,
             score_threshold=request.score_threshold,
         )
     except Exception as exc:
-        logger.error(f"[API] Qdrant retrieval failed: {exc}", exc_info=True)
-        yield _format_sse_event({
-            "type": "error",
-            "error": f"Vector retrieval failed: {str(exc)}",
-        })
+        logger.exception("[API] retrieve_and_expand failed")
+        ERROR_COUNTER.labels(category="retrieval").inc()
+        REQUEST_TOTAL.labels(status="error").inc()
+        yield _sse({"type": "error", "error": redact_error(exc)})
+        return
+    finally:
+        STAGE_LATENCY.labels(stage="retrieval").observe(
+            time.perf_counter() - t_retrieval_start
+        )
+
+    if retrieval_data.get("error"):
+        ERROR_COUNTER.labels(category="retrieval").inc()
+        REQUEST_TOTAL.labels(status="error").inc()
+        yield _sse({"type": "error", "error": "Retrieval failed. Please try again."})
         return
 
-    if not q_results:
-        yield _format_sse_event({
+    effective_query = retrieval_data["effective_query"]
+    context_window: str = retrieval_data["context_window"]
+    seeds_summary = retrieval_data["seeds"]
+    graph_relations = retrieval_data["graph_relations"]
+
+    # ── Guardrail: redact secrets from code chunks before prompt ────────────
+    redacted_context = redact_secrets(context_window)
+    if redacted_context != context_window:
+        SECRETS_REDACTED.inc()
+        logger.info("[Guardrail] Secrets redacted from retrieved code chunks.")
+
+    if not retrieval_data.get("q_results"):
+        FALLBACK_COUNTER.labels(reason="vector_only").inc()
+        yield _sse({
             "type": "context",
-            "context": "No matching code snippets found in Qdrant.",
+            "context": "No matching code snippets found.",
             "seeds": [],
             "graph_relations": [],
         })
-        yield _format_sse_event({
+        yield _sse({
             "type": "token",
             "token": "I could not find any relevant code snippets in the codebase for your query.",
         })
-        yield _format_sse_event({"type": "done", "session_id": request.session_id})
+        yield _sse({"type": "done", "session_id": request.session_id})
+        REQUEST_TOTAL.labels(status="success").inc()
         return
 
-    # Step 3: Neo4j Graph Traversal & Hydration
-    yield _format_sse_event({
-        "type": "status",
-        "stage": "graph_expansion",
-        "message": f"Expanding {len(q_results)} seed(s) in Neo4j (1–{request.max_hops} hops)...",
-    })
-
-    expanded = []
-    try:
-        expanded = await graph.traverse_top_seeds(
-            qdrant_results=q_results,
-            top_seeds=request.top_seeds,
-            max_hops=request.max_hops,
-            retriever=retriever,
-        )
-    except Exception as exc:
-        logger.warning(f"[API] Graph expansion skipped: {exc}")
-
-    # Build prompt context window
-    context_window = build_context_window(expanded if expanded else [{"seed_name": r.get("name"), "seed_file_path": r.get("payload", {}).get("file_path"), "similarity_score": r.get("score"), "raw_code": r.get("payload", {}).get("raw_code", ""), "adjacent_nodes": []} for r in q_results])
-
-    # Structure metadata for the frontend accordion
-    seeds_summary = []
-    graph_relations = []
-
-    for block in (expanded if expanded else []):
-        seeds_summary.append({
-            "id": block.get("seed_id", ""),
-            "name": block.get("seed_name", "Unknown"),
-            "file_path": block.get("seed_file_path", "Unknown"),
-            "similarity_score": round(float(block.get("similarity_score", 0.0)), 4),
-            "start_line": block.get("start_line"),
-            "end_line": block.get("end_line"),
-            "snippet": (block.get("raw_code") or "")[:500],
-        })
-        for adj in block.get("adjacent_nodes", []):
-            graph_relations.append({
-                "source_seed": block.get("seed_name", "Unknown"),
-                "target_name": adj.get("name", "Unknown"),
-                "target_type": adj.get("type", "Node"),
-                "target_file": adj.get("file_path", "Unknown"),
-                "hops": adj.get("hops", 1),
-                "relationship_types": adj.get("relationship_types", []),
-                "snippet": (adj.get("raw_code") or "")[:350],
-            })
-
-    # If graph wasn't expanded (fallback), populate seeds directly from Qdrant results
-    if not seeds_summary:
-        for r in q_results:
-            p = r.get("payload", {})
-            seeds_summary.append({
-                "id": str(r.get("id")),
-                "name": r.get("name", "Unknown"),
-                "file_path": p.get("file_path", "Unknown"),
-                "similarity_score": round(float(r.get("score", 0.0)), 4),
-                "start_line": p.get("start_line"),
-                "end_line": p.get("end_line"),
-                "snippet": (p.get("raw_code") or "")[:500],
-            })
-
-    # Emit Context Event
-    yield _format_sse_event({
+    yield _sse({
         "type": "context",
-        "context": context_window,
+        "context": redacted_context,          # redacted context to client too
         "seeds": seeds_summary,
         "graph_relations": graph_relations,
         "effective_query": effective_query,
     })
 
-    # Step 4: Stream Tokens via Gemini
-    yield _format_sse_event({
+    yield _sse({
         "type": "status",
         "stage": "generating",
-        "message": f"Generating answer via Gemini ({generator.model})...",
+        "message": f"Generating answer via {generator.model}...",
     })
 
-    full_answer_parts = []
+    # ── Generation with per-stage timing ────────────────────────────────────
+    full_answer_parts: list[str] = []
+    first_token_recorded = False
+    t_gen_start = time.perf_counter()
+
     try:
         async for chunk in generator.generate_stream(
             query=effective_query,
-            context=context_window,
+            context=redacted_context,
             history=chat_history,
         ):
+            if not first_token_recorded:
+                STAGE_LATENCY.labels(stage="first_token").observe(
+                    time.perf_counter() - t_gen_start
+                )
+                first_token_recorded = True
             full_answer_parts.append(chunk)
-            yield _format_sse_event({
-                "type": "token",
-                "token": chunk,
-            })
-    except Exception as exc:
-        logger.error(f"[API] Generation stream error: {exc}", exc_info=True)
-        yield _format_sse_event({
-            "type": "error",
-            "error": f"Generation error: {str(exc)}",
-        })
-        return
+            yield _sse({"type": "token", "token": chunk})
 
-    # Update session memory on successful completion
+    except Exception as exc:
+        logger.exception("[API] Generation stream error")
+        ERROR_COUNTER.labels(category="generation").inc()
+        REQUEST_TOTAL.labels(status="error").inc()
+        yield _sse({"type": "error", "error": redact_error(exc)})
+        return
+    finally:
+        STAGE_LATENCY.labels(stage="generation").observe(
+            time.perf_counter() - t_gen_start
+        )
+
+    # ── Token-cost accounting ────────────────────────────────────────────────
     complete_answer = "".join(full_answer_parts)
+    prompt_tokens = estimate_tokens(redacted_context + effective_query)
+    completion_tokens = estimate_tokens(complete_answer)
+    record_tokens(prompt_tokens, completion_tokens)
+
+    # ── Citation check ───────────────────────────────────────────────────────
+    citation_result = check_citations(
+        answer=complete_answer,
+        retrieved_chunks=[redacted_context],
+    )
+    if citation_result.has_bad_citations:
+        CITATION_ISSUES.inc()
+        logger.warning(
+            "[Guardrail] %d unverified citation(s) in answer: %s",
+            len(citation_result.bad_urls),
+            citation_result.bad_urls,
+        )
+
+    # ── Update session history (capped) ─────────────────────────────────────
     query_history.append(effective_query)
     chat_history.append({"role": "user", "content": request.query})
     chat_history.append({"role": "assistant", "content": complete_answer})
+    _sessions.trim_history(session)
+    ACTIVE_SESSIONS.set(len(_sessions))
 
-    # Emit Done Event
-    yield _format_sse_event({
+    # ── Total request latency ────────────────────────────────────────────────
+    total_latency = time.perf_counter() - t_total_start
+    STAGE_LATENCY.labels(stage="total").observe(total_latency)
+    REQUEST_TOTAL.labels(status="success").inc()
+
+    yield _sse({
         "type": "done",
         "session_id": request.session_id,
         "turns_count": len(query_history),
+        "metrics": {
+            "total_latency_s": round(total_latency, 3),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "citation_issues": len(citation_result.bad_urls),
+        },
     })
 
 
+# ── Query Endpoint ────────────────────────────────────────────────────────────
 @app.post("/api/v1/query")
-async def query_stream_endpoint(request: QueryRequest):
+async def query_stream_endpoint(request: QueryRequest, http_request: Request):
     """
-    Server-Sent Events (SSE) streaming endpoint for Codebase RAG.
-    Streams retrieval metadata, status events, and generated tokens in real time.
+    SSE streaming endpoint for Codebase RAG.
+
+    Streams: status events → context metadata → token stream → done.
+    All guardrails (rate limit, secret redaction, citation check) are applied
+    inside the generator before any data reaches the client.
     """
+    # Query-length is already enforced by Pydantic Field(max_length=).
+    # Surface a clean 422 for oversized queries rather than a 500.
     return StreamingResponse(
-        _rag_stream_generator(request),
+        _rag_stream_generator(request, client_ip=_client_ip(http_request)),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -352,9 +446,7 @@ async def query_stream_endpoint(request: QueryRequest):
     )
 
 
-# --------------------------------------------------------------------------- #
-#  Direct Execution Entry Point
-# --------------------------------------------------------------------------- #
+# ── Entry Point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

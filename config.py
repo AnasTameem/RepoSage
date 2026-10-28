@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -48,6 +49,31 @@ CF_LLM_MODEL  = "@cf/meta/llama-3.2-3b-instruct"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
+# --- Evaluation & Judge Settings ---
+# Separate judge model family/tier from generation model to avoid self-bias
+JUDGE_MODEL = os.getenv("JUDGE_MODEL", "gemini-2.5-flash")
+JUDGE_GEMINI_API_KEY = os.getenv("JUDGE_GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
+EVAL_EMBEDDING_MODEL = os.getenv("EVAL_EMBEDDING_MODEL", "models/text-embedding-004")
+
+
+# --- Production Retrieval Defaults ---
+DEFAULT_TOP_SEEDS = int(os.getenv("DEFAULT_TOP_SEEDS", "2"))
+DEFAULT_MAX_HOPS  = int(os.getenv("DEFAULT_MAX_HOPS", "2"))
+
+# --- Guardrail Settings ---
+# Comma-separated list of allowed CORS origins (empty = allow none, "*" = allow all)
+CORS_ALLOWED_ORIGINS: list[str] = [
+    o.strip()
+    for o in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:8501,http://127.0.0.1:8501").split(",")
+    if o.strip()
+]
+QUERY_MAX_CHARS       = int(os.getenv("QUERY_MAX_CHARS", "2000"))        # Hard cap on incoming query length
+RATE_LIMIT_RPM        = int(os.getenv("RATE_LIMIT_RPM", "30"))           # Max requests per minute per client IP
+MAX_SESSIONS          = int(os.getenv("MAX_SESSIONS", "500"))             # Max concurrent session entries in memory
+MAX_HISTORY_TURNS     = int(os.getenv("MAX_HISTORY_TURNS", "20"))        # Max chat turns kept per session
+
 # --- Groq LLM (Answer Generation - Legacy/Alternative) ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL   = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+
+

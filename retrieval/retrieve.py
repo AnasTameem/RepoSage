@@ -1,38 +1,65 @@
+import asyncio
+import logging
 import os
 import sys
-import logging
-import asyncio
-import aiohttp
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Any
+
+import aiohttp
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from neo4j import AsyncGraphDatabase, AsyncDriver
-import voyageai
 import httpx
+import voyageai
+from neo4j import AsyncDriver, AsyncGraphDatabase
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import SearchParams
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
+from qdrant_client.models import SearchParams
 
 try:
     from config import (
-        QDRANT_HOST as CONFIG_QDRANT_HOST,
-        QDRANT_API_KEY as CONFIG_QDRANT_API_KEY,
-        QDRANT_COLLECTION_NAME as CONFIG_QDRANT_COLLECTION,
-        VOYAGE_API_KEY as CONFIG_VOYAGE_API_KEY,
-        EMBEDDING_MODEL_NAME as CONFIG_EMBEDDING_MODEL,
-        EMBEDDING_DIMENSION as CONFIG_EMBEDDING_DIMENSION,
         BATCH_SIZE as CONFIG_BATCH_SIZE,
-        NEO4J_URI as CONFIG_NEO4J_URI,
-        NEO4J_USER as CONFIG_NEO4J_USER,
-        NEO4J_PASSWORD as CONFIG_NEO4J_PASSWORD,
-        NEO4J_DATABASE as CONFIG_NEO4J_DATABASE,
+    )
+    from config import (
         CF_ACCOUNT_ID as CONFIG_CF_ACCOUNT_ID,
+    )
+    from config import (
         CF_API_TOKEN as CONFIG_CF_API_TOKEN,
+    )
+    from config import (
         CF_LLM_MODEL as CONFIG_CF_LLM_MODEL,
+    )
+    from config import (
+        EMBEDDING_DIMENSION as CONFIG_EMBEDDING_DIMENSION,
+    )
+    from config import (
+        EMBEDDING_MODEL_NAME as CONFIG_EMBEDDING_MODEL,
+    )
+    from config import (
+        NEO4J_DATABASE as CONFIG_NEO4J_DATABASE,
+    )
+    from config import (
+        NEO4J_PASSWORD as CONFIG_NEO4J_PASSWORD,
+    )
+    from config import (
+        NEO4J_URI as CONFIG_NEO4J_URI,
+    )
+    from config import (
+        NEO4J_USER as CONFIG_NEO4J_USER,
+    )
+    from config import (
+        QDRANT_API_KEY as CONFIG_QDRANT_API_KEY,
+    )
+    from config import (
+        QDRANT_COLLECTION_NAME as CONFIG_QDRANT_COLLECTION,
+    )
+    from config import (
+        QDRANT_HOST as CONFIG_QDRANT_HOST,
+    )
+    from config import (
+        VOYAGE_API_KEY as CONFIG_VOYAGE_API_KEY,
     )
 except ImportError:
     CONFIG_QDRANT_HOST = os.getenv("QDRANT_HOST", "http://localhost:6333")
@@ -53,7 +80,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def extract_chunk_name(payload: Dict[str, Any]) -> str:
+def extract_chunk_name(payload: dict[str, Any]) -> str:
     """
     Extract a descriptive chunk name from the payload metadata or raw code.
     Examples:
@@ -64,7 +91,7 @@ def extract_chunk_name(payload: Dict[str, Any]) -> str:
     if not payload:
         return "Unknown Chunk"
 
-    if "name" in payload and payload["name"]:
+    if payload.get("name"):
         cls = payload.get("belongs_to_class")
         return f"{cls}.{payload['name']}()" if cls else f"{payload['name']}()"
 
@@ -91,18 +118,18 @@ def extract_chunk_name(payload: Dict[str, Any]) -> str:
 class Retrieval:
     def __init__(
         self,
-        qdrant_url: Optional[str] = None,
-        qdrant_api_key: Optional[str] = None,
-        voyage_api_key: Optional[str] = None,
-        collection_name: Optional[str] = None,
-        embedding_model: Optional[str] = None,
-        neo4j_uri: Optional[str] = None,
-        neo4j_user: Optional[str] = None,
-        neo4j_password: Optional[str] = None,
-        neo4j_database: Optional[str] = None,
-        cf_account_id: Optional[str] = None,
-        cf_api_token: Optional[str] = None,
-        cf_model: Optional[str] = None,
+        qdrant_url: str | None = None,
+        qdrant_api_key: str | None = None,
+        voyage_api_key: str | None = None,
+        collection_name: str | None = None,
+        embedding_model: str | None = None,
+        neo4j_uri: str | None = None,
+        neo4j_user: str | None = None,
+        neo4j_password: str | None = None,
+        neo4j_database: str | None = None,
+        cf_account_id: str | None = None,
+        cf_api_token: str | None = None,
+        cf_model: str | None = None,
     ):
         self.qdrant_url = qdrant_url or CONFIG_QDRANT_HOST
         self.qdrant_api_key = qdrant_api_key or CONFIG_QDRANT_API_KEY
@@ -117,9 +144,9 @@ class Retrieval:
         self.cf_api_token = cf_api_token or CONFIG_CF_API_TOKEN
         self.cf_model = cf_model or CONFIG_CF_LLM_MODEL
 
-        self.qdrant: Optional[AsyncQdrantClient] = None
-        self.voyage: Optional[voyageai.AsyncClient] = None
-        self.neo4j_driver: Optional[AsyncDriver] = None
+        self.qdrant: AsyncQdrantClient | None = None
+        self.voyage: voyageai.AsyncClient | None = None
+        self.neo4j_driver: AsyncDriver | None = None
 
     async def init_clients(self):
         """Initialize connections to Qdrant, Voyage AI, and Neo4j."""
@@ -158,7 +185,7 @@ class Retrieval:
             await self.neo4j_driver.close()
             self.neo4j_driver = None
 
-    async def embed_query(self, query: str, max_retries: int = 5) -> List[float]:
+    async def embed_query(self, query: str, max_retries: int = 5) -> list[float]:
         """
         Embed the user's query into a single dense 1024-dimensional vector
         using Voyage AI (voyage-code-3) with input_type='query'.
@@ -185,10 +212,10 @@ class Retrieval:
 
     async def search_qdrant(
         self,
-        query_vector: List[float],
+        query_vector: list[float],
         limit: int = 10,
-        score_threshold: Optional[float] = None,
-    ) -> List[Dict[str, Any]]:
+        score_threshold: float | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Perform an exact flat search in Qdrant bypassing the ANN's HNSW index.
         Uses SearchParams(exact=True) for full vector scan precision.
@@ -247,7 +274,7 @@ class Retrieval:
 
         return results
 
-    async def get_payloads_by_ids(self, ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    async def get_payloads_by_ids(self, ids: list[str]) -> dict[str, dict[str, Any]]:
         """
         Batch-retrieves points from Qdrant using client.retrieve(ids=[...]).
         Returns a dictionary mapping str(point_id) -> payload dict.
@@ -281,7 +308,7 @@ class Retrieval:
                 await asyncio.sleep(backoff)
         return {}
 
-    async def contextualize_query(self, query: str, history: List[str]) -> str:
+    async def contextualize_query(self, query: str, history: list[str]) -> str:
         """
         Reformulates a follow-up query into a standalone search query
         using prior conversation/query history context.
@@ -341,9 +368,9 @@ class Retrieval:
         self,
         query: str,
         limit: int = 5,
-        score_threshold: Optional[float] = None,
-        history: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
+        score_threshold: float | None = None,
+        history: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Pipeline Step 1:
         1. Contextualize follow-up query if history is provided.
@@ -369,7 +396,7 @@ async def main():
     retriever = Retrieval()
     try:
         await retriever.init_clients()
-        query_history: List[str] = []
+        query_history: list[str] = []
 
         print("\n" + "=" * 60)
         print("  CODEBASE RAG RETRIEVAL (Interactive Session)")
@@ -410,7 +437,7 @@ async def main():
             results = await retriever.retrieve(effective_query, limit=5, score_threshold=0.5)
 
             if not results:
-                print(f"\n[INFO] No chunks found with cosine similarity >= 0.5.\n")
+                print("\n[INFO] No chunks found with cosine similarity >= 0.5.\n")
             else:
                 print(f"\n[OK] Top-{len(results)} Relevant Chunks (Cosine Similarity >= 0.5):\n" + "=" * 60)
                 for idx, res in enumerate(results, 1):

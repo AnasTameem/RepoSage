@@ -4,7 +4,6 @@ prompt_templates.py - Prompt engineering for codebase RAG generation.
 Provides system and user prompts to guide the LLM in generating accurate,
 grounded, and citation-rich answers based on retrieved code context.
 """
-from typing import List, Dict, Optional
 
 CODEBASE_RAG_SYSTEM_PROMPT = """You are an expert AI software architect and codebase assistant.
 Your task is to answer user questions about a codebase using ONLY the provided retrieval context (primary vector search matches and 1-2 hop structural graph expansion).
@@ -30,7 +29,7 @@ GUIDELINES FOR YOUR RESPONSE:
 def build_user_prompt(
     query: str,
     context: str,
-    history: Optional[List[Dict[str, str]]] = None,
+    history: list[dict[str, str]] | None = None,
 ) -> str:
     """
     Constructs the user message containing retrieved codebase context and the user query.
