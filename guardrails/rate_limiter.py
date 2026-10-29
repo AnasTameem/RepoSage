@@ -43,3 +43,39 @@ class RateLimiter:
 
 # Singleton reused by main.py
 rate_limiter = RateLimiter()
+
+
+def get_client_ip(request: object) -> str:
+    """
+    Extract the real client IP address, properly handling reverse proxies and CDNs.
+
+    Checks in order of specificity:
+      1. CF-Connecting-IP (Cloudflare)
+      2. X-Real-IP (Nginx / standard reverse proxy)
+      3. X-Forwarded-For (Standard multi-hop proxy header: leftmost IP is client)
+      4. request.client.host (Direct socket connection fallback)
+    """
+    headers = getattr(request, "headers", None)
+    if headers is not None:
+        # 1. Cloudflare
+        cf_ip = headers.get("CF-Connecting-IP")
+        if cf_ip and cf_ip.strip():
+            return cf_ip.strip()
+
+        # 2. Nginx / generic reverse proxy
+        x_real_ip = headers.get("X-Real-IP")
+        if x_real_ip and x_real_ip.strip():
+            return x_real_ip.strip()
+
+        # 3. Standard multi-hop X-Forwarded-For: <client>, <proxy1>, <proxy2>
+        xff = headers.get("X-Forwarded-For")
+        if xff and xff.strip():
+            return xff.split(",")[0].strip()
+
+    # 4. Direct socket connection fallback
+    client = getattr(request, "client", None)
+    if client and getattr(client, "host", None):
+        return client.host
+
+    return "unknown"
+

@@ -167,3 +167,61 @@ class TestRetrievalEvalOffline:
         }
         assert _symbol_matches(expected, cand_mismatch) is False
 
+
+@pytest.mark.offline
+class TestContextualizeQueryOffline:
+    """Offline unit tests for Retrieval.contextualize_query."""
+
+    @pytest.mark.asyncio
+    async def test_empty_history_returns_query(self):
+        from retrieval.retrieve import Retrieval
+
+        retriever = Retrieval(qdrant_url=":memory:")
+        res = await retriever.contextualize_query("How does indexing work?", [])
+        assert res == "How does indexing work?"
+
+    @pytest.mark.asyncio
+    async def test_empty_query_returns_query(self):
+        from retrieval.retrieve import Retrieval
+
+        retriever = Retrieval(qdrant_url=":memory:")
+        res = await retriever.contextualize_query("   ", ["Previous question"])
+        assert res == "   "
+
+    @pytest.mark.asyncio
+    async def test_heuristic_with_pronouns_and_string_history(self):
+        from retrieval.retrieve import Retrieval
+
+        # No CF or Gemini keys set in mock instance -> triggers heuristic
+        retriever = Retrieval(
+            qdrant_url=":memory:",
+            cf_account_id="",
+            cf_api_token="",
+            gemini_api_key="",
+        )
+        res = await retriever.contextualize_query(
+            "Does it support retries?",
+            ["How does the ingestion pipeline work?"],
+        )
+        assert "Does it support retries?" in res
+        assert "How does the ingestion pipeline work?" in res
+
+    @pytest.mark.asyncio
+    async def test_heuristic_with_dict_history(self):
+        from retrieval.retrieve import Retrieval
+
+        retriever = Retrieval(
+            qdrant_url=":memory:",
+            cf_account_id="",
+            cf_api_token="",
+            gemini_api_key="",
+        )
+        history_dicts = [
+            {"role": "user", "content": "Where is the authentication logic defined?"},
+            {"role": "assistant", "content": "It is in agent/auth.py"},
+        ]
+        res = await retriever.contextualize_query("How does it hash passwords?", history_dicts)
+        assert "How does it hash passwords?" in res
+        assert "agent/auth.py" in res
+
+

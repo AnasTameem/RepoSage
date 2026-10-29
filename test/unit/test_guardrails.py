@@ -112,6 +112,38 @@ class TestRateLimiter:
         rl.reset("ip-x")
         assert rl.is_allowed("ip-x"), "Should be allowed after reset"
 
+    def test_get_client_ip_headers(self):
+        from unittest.mock import MagicMock
+        from guardrails.rate_limiter import get_client_ip
+
+        # 1. Cloudflare header
+        req_cf = MagicMock()
+        req_cf.headers = {"CF-Connecting-IP": "203.0.113.10"}
+        assert get_client_ip(req_cf) == "203.0.113.10"
+
+        # 2. X-Real-IP header
+        req_real = MagicMock()
+        req_real.headers = {"X-Real-IP": "198.51.100.25"}
+        assert get_client_ip(req_real) == "198.51.100.25"
+
+        # 3. X-Forwarded-For multi-hop (first IP is the real client)
+        req_xff = MagicMock()
+        req_xff.headers = {"X-Forwarded-For": "192.0.2.1, 10.0.0.1, 172.16.0.1"}
+        assert get_client_ip(req_xff) == "192.0.2.1"
+
+        # 4. Direct client connection
+        req_direct = MagicMock()
+        req_direct.headers = {}
+        req_direct.client.host = "127.0.0.1"
+        assert get_client_ip(req_direct) == "127.0.0.1"
+
+        # 5. Missing client and headers
+        req_empty = MagicMock()
+        req_empty.headers = None
+        req_empty.client = None
+        assert get_client_ip(req_empty) == "unknown"
+
+
 
 # ---------------------------------------------------------------------------
 # Citation Check

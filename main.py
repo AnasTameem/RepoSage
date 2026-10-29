@@ -60,7 +60,7 @@ from config import (
     RATE_LIMIT_RPM,
 )
 from guardrails.citation_check import check_citations
-from guardrails.rate_limiter import RateLimiter
+from guardrails.rate_limiter import RateLimiter, get_client_ip
 from guardrails.redactor import redact_error, redact_secrets
 from llm.generator import ResponseGenerator
 from llm.rag_pipeline import retrieve_and_expand
@@ -177,13 +177,8 @@ def _sse(data: dict[str, Any]) -> str:
 
 
 def _client_ip(request: Request) -> str:
-    """Best-effort client IP (respects X-Forwarded-For from trusted proxies)."""
-    xff = request.headers.get("X-Forwarded-For")
-    if xff:
-        return xff.split(",")[0].strip()
-    if request.client:
-        return request.client.host
-    return "unknown"
+    """Extract real client IP (respects CF-Connecting-IP, X-Real-IP, and X-Forwarded-For)."""
+    return get_client_ip(request)
 
 
 # ── Prometheus endpoint ───────────────────────────────────────────────────────

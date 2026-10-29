@@ -38,6 +38,12 @@ try:
         EMBEDDING_MODEL_NAME as CONFIG_EMBEDDING_MODEL,
     )
     from config import (
+        GEMINI_API_KEY as CONFIG_GEMINI_API_KEY,
+    )
+    from config import (
+        GEMINI_MODEL as CONFIG_GEMINI_MODEL,
+    )
+    from config import (
         NEO4J_DATABASE as CONFIG_NEO4J_DATABASE,
     )
     from config import (
@@ -76,6 +82,8 @@ except ImportError:
     CONFIG_CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "")
     CONFIG_CF_API_TOKEN = os.getenv("CF_API_TOKEN", "")
     CONFIG_CF_LLM_MODEL = os.getenv("CF_LLM_MODEL", "@cf/meta/llama-3.2-3b-instruct")
+    CONFIG_GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+    CONFIG_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +138,8 @@ class Retrieval:
         cf_account_id: str | None = None,
         cf_api_token: str | None = None,
         cf_model: str | None = None,
+        gemini_api_key: str | None = None,
+        gemini_model: str | None = None,
     ):
         self.qdrant_url = qdrant_url or CONFIG_QDRANT_HOST
         self.qdrant_api_key = qdrant_api_key or CONFIG_QDRANT_API_KEY
@@ -143,6 +153,8 @@ class Retrieval:
         self.cf_account_id = cf_account_id or CONFIG_CF_ACCOUNT_ID
         self.cf_api_token = cf_api_token or CONFIG_CF_API_TOKEN
         self.cf_model = cf_model or CONFIG_CF_LLM_MODEL
+        self.gemini_api_key = gemini_api_key or CONFIG_GEMINI_API_KEY
+        self.gemini_model = gemini_model or CONFIG_GEMINI_MODEL or "gemini-2.5-flash"
 
         self.qdrant: AsyncQdrantClient | None = None
         self.voyage: voyageai.AsyncClient | None = None
@@ -308,11 +320,23 @@ class Retrieval:
                 await asyncio.sleep(backoff)
         return {}
 
-    async def contextualize_query(self, query: str, history: list[str]) -> str:
+    @staticmethod
+    def _normalize_history_entry(item: Any) -> str:
+        """Extract plain text from either a string or a chat turn dict."""
+        if isinstance(item, dict):
+            return str(item.get("content", "")).strip()
+        return str(item).strip()
+
+    async def contextualize_query(
+        self,
+        query: str,
+        history: list[str] | list[dict[str, str]],
+    ) -> str:
         """
         Reformulates a follow-up query into a standalone search query
         using prior conversation/query history context.
-        Uses Cloudflare Workers AI if configured, otherwise falls back to heuristic resolution.
+        Uses Cloudflare Workers AI or Google Gemini if configured,
+        otherwise falls back to robust heuristic resolution.
         """
         if not history:
             return query
@@ -321,21 +345,30 @@ class Retrieval:
         if not clean_query:
             return query
 
-        # 1. LLM-based query reformulator via Cloudflare Workers AI
+        normalized_history = [
+            self._normalize_history_entry(h)
+            for h in history
+            if self._normalize_history_entry(h)
+        ]
+        if not normalized_history:
+            return clean_query
+
+        # System prompt for standalone query reformulation
+        system_prompt = (
+            "You are a search query rewriting assistant for a codebase search engine. "
+            "Given the conversation history and the user's latest follow-up query, rewrite "
+            "the follow-up query into a single, complete, standalone search query that can be "
+            "understood without the previous turns. "
+            "Preserve all specific code entities, filenames, or technical terms. "
+            "If the follow-up query is already standalone, return it as-is. "
+            "Reply ONLY with the rewritten search query, no explanation or conversational filler."
+        )
+        history_text = "\n".join(f"- {h}" for h in normalized_history[-3:])
+        user_prompt = f"Previous queries:\n{history_text}\n\nLatest follow-up query:\n{clean_query}"
+
+        # 1. Cloudflare Workers AI (if configured)
         if self.cf_account_id and self.cf_api_token:
             try:
-                system_prompt = (
-                    "You are a search query rewriting assistant for a codebase search engine. "
-                    "Given the conversation history and the user's latest follow-up query, rewrite "
-                    "the follow-up query into a single, complete, standalone search query that can be "
-                    "understood without the previous turns. "
-                    "Preserve all specific code entities, filenames, or technical terms. "
-                    "If the follow-up query is already standalone, return it as-is. "
-                    "Reply ONLY with the rewritten search query, no explanation or conversational filler."
-                )
-                history_text = "\n".join(f"- {h}" for h in history[-3:])
-                user_prompt = f"Previous queries:\n{history_text}\n\nLatest follow-up query:\n{clean_query}"
-
                 url = f"https://api.cloudflare.com/client/v4/accounts/{self.cf_account_id}/ai/run/{self.cf_model}"
                 headers = {"Authorization": f"Bearer {self.cf_api_token}"}
                 payload = {
@@ -353,13 +386,46 @@ class Retrieval:
                             if rewritten:
                                 return rewritten.strip("\"'` ")
             except Exception as e:
-                logger.debug(f"[Retrieval] LLM query rewriting skipped: {e}")
+                logger.debug(f"[Retrieval] Cloudflare query rewriting skipped: {e}")
 
-        # 2. Heuristic fallback: if query references pronouns or is short, attach previous context
+        # 2. Google Gemini (if configured and CF didn't produce a result)
+        if self.gemini_api_key:
+            try:
+                from google import genai
+                from google.genai import types
+
+                gemini_client = genai.Client(api_key=self.gemini_api_key)
+                prompt = (
+                    f"{system_prompt}\n\n"
+                    f"Previous queries:\n{history_text}\n\n"
+                    f"Latest follow-up query:\n{clean_query}\n\n"
+                    "Rewritten standalone query:"
+                )
+                config = types.GenerateContentConfig(
+                    temperature=0.0,
+                    max_output_tokens=128,
+                )
+                loop = asyncio.get_running_loop()
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: gemini_client.models.generate_content(
+                        model=self.gemini_model,
+                        contents=prompt,
+                        config=config,
+                    ),
+                )
+                if response and response.text:
+                    rewritten = response.text.strip().strip("\"'` ")
+                    if rewritten:
+                        return rewritten
+            except Exception as e:
+                logger.debug(f"[Retrieval] Gemini query rewriting skipped: {e}")
+
+        # 3. Heuristic fallback: if query references pronouns or is short, attach previous context
         pronouns = {"it", "its", "this", "that", "these", "those", "they", "them", "he", "she"}
         words = set(clean_query.lower().replace("?", "").replace(".", "").split())
         if (words & pronouns) or len(clean_query.split()) <= 3:
-            prev_query = history[-1].strip()
+            prev_query = normalized_history[-1]
             return f"{clean_query} ({prev_query})"
 
         return clean_query
