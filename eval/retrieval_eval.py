@@ -130,6 +130,7 @@ async def evaluate_retrieval(
                     top_seeds=top_seeds,
                     max_hops=max_hops,
                     retriever=retriever,
+                    query=question,
                 )
             except Exception as exc:
                 logger.warning(f"Graph traversal error on question {idx}: {exc}")

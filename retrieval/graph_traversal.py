@@ -45,6 +45,133 @@ from retrieval.retrieve import Retrieval
 
 logger = logging.getLogger(__name__)
 
+STOP_WORDS = {
+    "a", "an", "the", "in", "on", "at", "to", "for", "of", "with", "by", "from",
+    "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+    "do", "does", "did", "and", "or", "but", "if", "then", "else", "when",
+    "where", "why", "how", "all", "any", "both", "each", "few", "more", "most",
+    "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so",
+    "than", "too", "very", "can", "will", "just", "should", "now", "what", "which",
+    "who", "whom", "this", "that", "these", "those", "it", "its", "into", "over",
+}
+
+
+def _extract_tokens(text: str) -> set[str]:
+    """
+    Extract meaningful code and natural language tokens from text,
+    splitting camelCase, PascalCase, snake_case, and non-alphanumeric separators.
+    """
+    import re
+    if not text:
+        return set()
+
+    s1 = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
+    raw_tokens = re.findall(r"[a-zA-Z0-9_]+", s1.lower())
+
+    tokens = set()
+    for tok in raw_tokens:
+        tok_clean = tok.strip("_")
+        if not tok_clean:
+            continue
+        if tok_clean not in STOP_WORDS and len(tok_clean) > 1:
+            tokens.add(tok_clean)
+        if "_" in tok:
+            for sub in tok.split("_"):
+                sub_clean = sub.strip("_")
+                if sub_clean and sub_clean not in STOP_WORDS and len(sub_clean) > 1:
+                    tokens.add(sub_clean)
+    return tokens
+
+
+def calculate_node_relevance(query: str, node: dict[str, Any]) -> float:
+    """
+    Calculates semantic & lexical relevance score between query and a graph node (EXP-01).
+
+    Factors considered:
+      1. Exact Symbol / Name Match: Node name appearing in query.
+      2. Token Overlap with Node Name and Class: (High weight).
+      3. Token Overlap with Raw Code / Docstring: (Medium weight).
+      4. File Path / Module Match: Query terms matching file path tokens.
+      5. Relationship Intent Match: (e.g. 'calls'/'callers' query intent matching CALLS edge).
+      6. Distance / Hop Decay: 1-hop connections get higher base priority over 2-hop.
+    """
+    if not query:
+        return 0.0
+
+    query_lower = query.lower()
+    q_tokens = _extract_tokens(query)
+    if not q_tokens:
+        return 0.0
+
+    node_name = str(node.get("name") or "").strip()
+    node_name_lower = node_name.lower()
+    file_path = str(node.get("file_path") or "").lower().replace("\\", "/")
+    raw_code = str(node.get("raw_code") or "")
+    raw_code_lower = raw_code.lower()
+    belongs_to = str(node.get("belongs_to_class") or "").lower()
+    rels = [str(r).upper() for r in node.get("relationship_types", [])]
+    hops = int(node.get("hops", 1))
+
+    score = 0.0
+
+    # 1. Exact node name appears in query (e.g. user asks about this exact function/class)
+    if node_name_lower and len(node_name_lower) > 2 and node_name_lower in query_lower:
+        score += 5.0
+
+    # 2. Token overlap with node name
+    name_tokens = _extract_tokens(node_name)
+    if name_tokens:
+        name_overlap = q_tokens & name_tokens
+        if name_overlap:
+            score += 3.0 * (len(name_overlap) / len(q_tokens))
+            score += 2.0 * (len(name_overlap) / len(name_tokens))
+
+    # 3. Belongs-to-class token overlap
+    if belongs_to:
+        cls_tokens = _extract_tokens(belongs_to)
+        cls_overlap = q_tokens & cls_tokens
+        if cls_overlap:
+            score += 1.5 * (len(cls_overlap) / len(cls_tokens))
+
+    # 4. File path token overlap
+    path_tokens = _extract_tokens(file_path)
+    if path_tokens:
+        path_overlap = q_tokens & path_tokens
+        if path_overlap:
+            score += 1.0 * (len(path_overlap) / len(q_tokens))
+
+    # 5. Raw code token frequency / overlap
+    if raw_code_lower:
+        code_matches = sum(1 for tok in q_tokens if tok in raw_code_lower)
+        if code_matches > 0:
+            # increased weight to reward token overlap
+            score += 4.0 * (code_matches / len(q_tokens))
+        for tok in q_tokens:
+            if len(tok) >= 4 and (f"def {tok}" in raw_code_lower or f"class {tok}" in raw_code_lower):
+                score += 2.0
+        # Additional boost for router inclusion patterns often asked in queries
+        if "router" in query_lower and "include_router" in raw_code_lower:
+            score += 2.0
+
+    # 6. Intent-to-Relationship matching
+    is_caller_query = any(k in query_lower for k in ["who calls", "call", "caller", "invok", "mount", "us"])
+    if is_caller_query and any("CALLS" in r for r in rels):
+        score += 1.5
+
+    # Test-related intent matching
+    is_test_query = any(k in query_lower for k in ["test", "fixture", "assert", "mock"])
+    is_test_node = "test" in file_path or "test" in node_name_lower
+    if is_test_query and is_test_node:
+        score += 2.0
+    elif not is_test_query and is_test_node:
+        score -= 1.0
+
+    # 7. Hop distance factor: prefer 1-hop over 2-hop unless 2-hop has high content relevance
+    hop_multiplier = 1.0 if hops == 1 else 0.7
+    final_score = max(0.0, score * hop_multiplier)
+
+    return round(final_score, 4)
+
 
 # --------------------------------------------------------------------------- #
 #  GraphTraversal Class
@@ -201,6 +328,7 @@ class GraphTraversal:
         max_hops: int = 2,
         per_seed_limit: int = 20,
         retriever: Any | None = None,
+        query: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Passes ALL top `top_seeds` Qdrant results into Neo4j as a single batched
@@ -210,6 +338,10 @@ class GraphTraversal:
         Collects unique IDs from Neo4j graph expansion that were not in Qdrant's
         initial seeds, batch-retrieves their payloads from Qdrant, and merges
         the structural expansion results with their code bodies.
+
+        When `query` is provided (EXP-01), calculates semantic relevance for all
+        adjacent nodes and sorts them descending so the most relevant neighbors
+        take priority in prompt assembly.
 
         Returns list of seed blocks containing structural graph info and complete code snippets.
         """
@@ -273,12 +405,24 @@ class GraphTraversal:
             row["end_line"] = p.get("end_line")
             row["decorators"] = p.get("decorators", [])
             row["is_api_endpoint"] = p.get("is_api_endpoint", False)
+            if query:
+                row["relevance_score"] = calculate_node_relevance(query, row)
+            else:
+                row["relevance_score"] = 0.0
 
         # 6. Group adjacent rows back to their originating seed
         for row in all_adjacent:
             sid = row.get("seed_id")
             if sid in seed_meta:
                 seed_meta[sid]["adjacent_nodes"].append(row)
+
+        # 6b. Experiment 1: Sort each seed's adjacent nodes descending by relevance score
+        if query:
+            for sid, block in seed_meta.items():
+                block["adjacent_nodes"].sort(
+                    key=lambda n: (n.get("relevance_score", 0.0), -n.get("hops", 1)),
+                    reverse=True,
+                )
 
         # 7. Preserve Qdrant ranking order
         expanded = []
@@ -301,12 +445,14 @@ def build_context_window(
     max_adj_snippet_chars: int = 1000,
     max_adj_code_count: int = 2,
     return_chunks: bool = False,
+    query: str | None = None,
+    min_relevance_for_code: float = 0.5,
 ) -> Any:
     """
     Builds a strictly budgeted prompt context window combining:
       1. Primary vector seed chunks with similarity scores and capped code snippets.
-      2. Top 1-hop direct dependencies with code snippets (capped count & size).
-      3. 2-hop connected nodes as compact structural references (no code bodies).
+      2. Top adjacent graph dependencies, ordered by semantic relevance (EXP-01).
+      3. Lower-relevance / 2-hop connected nodes as compact structural references.
     Enforces a strict ~10,000 character limit (~2,500 tokens).
 
     If return_chunks is True, returns (context_str, included_chunks_list) so
@@ -355,7 +501,7 @@ def build_context_window(
 
     current_length = sum(len(s) + 1 for s in sections)
 
-    # Section 2: Structural Graph Expansion (1-2 Hops)
+    # Section 2: Structural Graph Expansion (Ordered by Semantic Relevance)
     sections.append("## STRUCTURAL GRAPH EXPANSION (1-2 Hops via Neo4j)")
     for idx, seed in enumerate(expanded_results, 1):
         s_name = seed.get("seed_name", "Unknown")
@@ -363,8 +509,21 @@ def build_context_window(
         if not adj_nodes:
             continue
 
-        # Sort so 1-hop comes before 2-hop
-        sorted_adj = sorted(adj_nodes, key=lambda n: n.get("hops", 1))
+        # Experiment 1: Ensure relevance scores are computed if query is provided
+        if query:
+            for n in adj_nodes:
+                if "relevance_score" not in n:
+                    n["relevance_score"] = calculate_node_relevance(query, n)
+
+        has_relevance = any("relevance_score" in n for n in adj_nodes)
+        if has_relevance:
+            sorted_adj = sorted(
+                adj_nodes,
+                key=lambda n: (n.get("relevance_score", 0.0), -n.get("hops", 1)),
+                reverse=True,
+            )
+        else:
+            sorted_adj = sorted(adj_nodes, key=lambda n: n.get("hops", 1))
 
         sections.append(f"### Graph Connections for Seed #{idx} ({s_name}):")
         for node in sorted_adj:
@@ -378,17 +537,28 @@ def build_context_window(
             e_line = node.get("end_line")
             line_info = f" (Lines {s_line}-{e_line})" if s_line and e_line else ""
             raw_code = node.get("raw_code", "").strip()
+            rel_score = node.get("relevance_score", 0.0)
 
-            line_header = f"- [{hops}-Hop via {rels}] {ntype} `{name}` ({file_path}{line_info})"
+            score_tag = f" [relevance: {rel_score:.2f}]" if has_relevance else ""
+            line_header = f"- [{hops}-Hop via {rels}]{score_tag} {ntype} `{name}` ({file_path}{line_info})"
             sections.append(line_header)
             current_length += len(line_header) + 1
+
+            # Decide whether to attach code snippet:
+            # When relevance scoring is active, prune noise: only include code snippet if
+            # the node has meaningful relevance (>= min_relevance_for_code) or is top match (>= 0.2).
+            is_relevant_enough = True
+            if has_relevance:
+                is_relevant_enough = (rel_score >= min_relevance_for_code) or (
+                    adj_code_snippets_added == 0 and rel_score >= 0.2
+                )
 
             if nid in seen_code_ids:
                 note = f"  *(Code body for `{name}` already included above)*"
                 sections.append(note)
                 current_length += len(note) + 1
-            elif raw_code and hops == 1 and adj_code_snippets_added < max_adj_code_count:
-                # Add 1-hop code snippet only if within strict budget
+            elif raw_code and is_relevant_enough and adj_code_snippets_added < max_adj_code_count:
+                # Add code snippet only if within strict budget
                 if len(raw_code) > max_adj_snippet_chars:
                     raw_code = raw_code[:max_adj_snippet_chars].rstrip() + "\n# ... [Snippet truncated] ..."
                 code_block_len = len(raw_code) + 25
@@ -399,7 +569,7 @@ def build_context_window(
                     sections.append("  " + raw_code.replace("\n", "\n  "))
                     sections.append("  ```")
                     current_length += code_block_len
-                    included_chunks.append(f"### [1-Hop {rels}] {ntype} `{name}` ({file_path}{line_info})\n{raw_code}")
+                    included_chunks.append(f"### [{hops}-Hop {rels}] {ntype} `{name}` ({file_path}{line_info})\n{raw_code}")
             sections.append("")
 
     context_str = "\n".join(sections)
@@ -411,7 +581,7 @@ def build_context_window(
 # --------------------------------------------------------------------------- #
 #  Pretty Print Helper
 # --------------------------------------------------------------------------- #
-def print_traversal_results(traversal_results: list[dict[str, Any]], show_context: bool = False):
+def print_traversal_results(traversal_results: list[dict[str, Any]], show_context: bool = False, query: str | None = None):
     """Prints formatted output of seed nodes and their 1..2 hop adjacent nodes with code snippet stats."""
     print("\n" + "=" * 70)
     print("  GRAPH EXPANSION RESULTS (1 to 2 Hops from Top-2 Qdrant Seeds)")
@@ -453,7 +623,9 @@ def print_traversal_results(traversal_results: list[dict[str, Any]], show_contex
                 n_s = node.get("start_line")
                 n_e = node.get("end_line")
                 l_tag = f":L{n_s}-L{n_e}" if n_s and n_e else ""
-                print(f"      -> [{node['type']}] {node['name']} ({node['file_path']}{l_tag}) via [{rel_str}]{c_tag}")
+                r_score = node.get("relevance_score")
+                s_tag = f" [relevance: {r_score:.2f}]" if r_score is not None else ""
+                print(f"      -> [{node['type']}] {node['name']} ({node['file_path']}{l_tag}) via [{rel_str}]{c_tag}{s_tag}")
 
         if hop2:
             print(f"  [*] 2-Hop Connected ({len(hop2)} nodes):")
@@ -464,13 +636,15 @@ def print_traversal_results(traversal_results: list[dict[str, Any]], show_contex
                 n_s = node.get("start_line")
                 n_e = node.get("end_line")
                 l_tag = f":L{n_s}-L{n_e}" if n_s and n_e else ""
-                print(f"      -> [{node['type']}] {node['name']} ({node['file_path']}{l_tag}) via [{rel_str}]{c_tag}")
+                r_score = node.get("relevance_score")
+                s_tag = f" [relevance: {r_score:.2f}]" if r_score is not None else ""
+                print(f"      -> [{node['type']}] {node['name']} ({node['file_path']}{l_tag}) via [{rel_str}]{c_tag}{s_tag}")
 
     if show_context:
         print("\n" + "=" * 70)
         print("  COMPILED LLM CONTEXT WINDOW PREVIEW")
         print("=" * 70)
-        context_str = build_context_window(traversal_results)
+        context_str = build_context_window(traversal_results, query=query)
         print(context_str)
 
 
@@ -519,8 +693,9 @@ async def main():
                 top_seeds=args.top_seeds,
                 max_hops=args.max_hops,
                 retriever=retriever,
+                query=args.query,
             )
-            print_traversal_results(expanded, show_context=args.show_context)
+            print_traversal_results(expanded, show_context=args.show_context, query=args.query)
             return
 
         # Interactive loop
@@ -560,8 +735,9 @@ async def main():
                 top_seeds=args.top_seeds,
                 max_hops=args.max_hops,
                 retriever=retriever,
+                query=effective_query,
             )
-            print_traversal_results(expanded, show_context=args.show_context)
+            print_traversal_results(expanded, show_context=args.show_context, query=effective_query)
             query_history.append(effective_query)
 
     finally:

@@ -1,0 +1,457 @@
+{
+  "timestamp": "2026-10-30T10:44:44.711078+00:00",
+  "n_evaluated": 31,
+  "top_seeds": 2,
+  "max_hops": 2,
+  "metrics": {
+    "recall_at_k_vector": 0.7097,
+    "recall_at_k_hybrid": 0.8387,
+    "mrr": 0.5806,
+    "graph_rescue_rate": 0.4444,
+    "graph_rescued_count": 4
+  },
+  "details": [
+    {
+      "question": "Where is ComputePolicy defined and what default parameters does it set?",
+      "expected_symbols": [
+        {
+          "file": "agent/adaptive_compute.py",
+          "name": "ComputePolicy"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 1,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 34
+    },
+    {
+      "question": "Where is ClaimAssessment defined and what attributes does it track?",
+      "expected_symbols": [
+        {
+          "file": "agent/grounding.py",
+          "name": "ClaimAssessment"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 1,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 32
+    },
+    {
+      "question": "Where is GatewayPolicy defined and what budget limits does it configure?",
+      "expected_symbols": [
+        {
+          "file": "agent/model_gateway.py",
+          "name": "GatewayPolicy"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 1,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 38
+    },
+    {
+      "question": "Where is open_conversation_store implemented and what storage backends does it support?",
+      "expected_symbols": [
+        {
+          "file": "service/persistence_store.py",
+          "name": "open_conversation_store"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 1,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 15
+    },
+    {
+      "question": "Where is ChatMessage defined in the API schemas?",
+      "expected_symbols": [
+        {
+          "file": "schema/schema.py",
+          "name": "ChatMessage"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 1,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 35
+    },
+    {
+      "question": "Where is CodingAgent defined and what is its role?",
+      "expected_symbols": [
+        {
+          "file": "code_agent/agent.py",
+          "name": "CodingAgent"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 1,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 26
+    },
+    {
+      "question": "Where is CostAwareRouter defined and what is its purpose?",
+      "expected_symbols": [
+        {
+          "file": "evals/adaptive_router.py",
+          "name": "CostAwareRouter"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 2,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 28
+    },
+    {
+      "question": "Where is EvidenceQualityPolicy defined in the agent package?",
+      "expected_symbols": [
+        {
+          "file": "agent/evidence_quality.py",
+          "name": "EvidenceQualityPolicy"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 2,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 37
+    },
+    {
+      "question": "How does plan_compute determine whether to deliberate or early_exit?",
+      "expected_symbols": [
+        {
+          "file": "agent/adaptive_compute.py",
+          "name": "plan_compute"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 2,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 37
+    },
+    {
+      "question": "How does verify_grounding evaluate claim coverage and invalid citations?",
+      "expected_symbols": [
+        {
+          "file": "agent/grounding.py",
+          "name": "verify_grounding"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 1,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 36
+    },
+    {
+      "question": "How does estimate_tokens approximate token count without credentials?",
+      "expected_symbols": [
+        {
+          "file": "agent/model_gateway.py",
+          "name": "estimate_tokens"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 2,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 40
+    },
+    {
+      "question": "How does select_candidate choose the winning candidate during deliberation?",
+      "expected_symbols": [
+        {
+          "file": "agent/adaptive_compute.py",
+          "name": "select_candidate"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 1,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 40
+    },
+    {
+      "question": "How does repair_answer handle ungrounded claims?",
+      "expected_symbols": [
+        {
+          "file": "agent/grounding.py",
+          "name": "repair_answer"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 2,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 40
+    },
+    {
+      "question": "How does InferenceGateway handle circuit breaker trips and provider cooldown?",
+      "expected_symbols": [
+        {
+          "file": "agent/model_gateway.py",
+          "name": "InferenceGateway"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 1,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 40
+    },
+    {
+      "question": "How does extract_memory_candidates parse user corrections into memories?",
+      "expected_symbols": [
+        {
+          "file": "agent/memory.py",
+          "name": "extract_memory_candidates"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 1,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 33
+    },
+    {
+      "question": "How does adjudicate_evidence score retrieved evidence items in evidence_quality.py?",
+      "expected_symbols": [
+        {
+          "file": "agent/evidence_quality.py",
+          "name": "adjudicate_evidence"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 1,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 40
+    },
+    {
+      "question": "How does parse_llama_guard_output assess prompt and response safety?",
+      "expected_symbols": [
+        {
+          "file": "agent/llama_guard.py",
+          "name": "parse_llama_guard_output"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 1,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 21
+    },
+    {
+      "question": "How does selective_decision in uncertainty.py decide whether to release or abstain?",
+      "expected_symbols": [
+        {
+          "file": "agent/uncertainty.py",
+          "name": "selective_decision"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 2,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 40
+    },
+    {
+      "question": "Who calls plan_compute in the research assistant workflow?",
+      "expected_symbols": [
+        {
+          "file": "agent/research_assistant.py",
+          "name": "build_research_assistant"
+        },
+        {
+          "file": "agent/adaptive_compute.py",
+          "name": "plan_compute"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 2,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 40
+    },
+    {
+      "question": "Who invokes verify_grounding to validate generated responses?",
+      "expected_symbols": [
+        {
+          "file": "agent/research_assistant.py",
+          "name": "build_research_assistant"
+        },
+        {
+          "file": "agent/grounding.py",
+          "name": "verify_grounding"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 2,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 40
+    },
+    {
+      "question": "Who calls open_conversation_store to manage chat persistence?",
+      "expected_symbols": [
+        {
+          "file": "service/service.py",
+          "name": "open_conversation_store"
+        }
+      ],
+      "vector_hit": false,
+      "hybrid_hit": false,
+      "rank": null,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 30
+    },
+    {
+      "question": "Who calls get_memory_store to persist extracted agent memories?",
+      "expected_symbols": [
+        {
+          "file": "service/service.py",
+          "name": "get_memory_store"
+        }
+      ],
+      "vector_hit": false,
+      "hybrid_hit": false,
+      "rank": null,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 40
+    },
+    {
+      "question": "Who mounts code_agent_router in the FastAPI application?",
+      "expected_symbols": [
+        {
+          "file": "service/service.py",
+          "name": "code_agent_router"
+        }
+      ],
+      "vector_hit": false,
+      "hybrid_hit": false,
+      "rank": null,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 38
+    },
+    {
+      "question": "Who uses CostAwareRouter to direct query traffic?",
+      "expected_symbols": [
+        {
+          "file": "service/service.py",
+          "name": "CostAwareRouter"
+        }
+      ],
+      "vector_hit": false,
+      "hybrid_hit": false,
+      "rank": null,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 28
+    },
+    {
+      "question": "Where is adaptive compute planning and consensus tested?",
+      "expected_symbols": [
+        {
+          "file": "tests/test_adaptive_compute.py",
+          "name": "test_planner_early_exits_escalates_and_fails_closed"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 1,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 36
+    },
+    {
+      "question": "Where is grounding verification and claim repair tested?",
+      "expected_symbols": [
+        {
+          "file": "tests/test_grounding.py",
+          "name": "test_supported_claim_and_allowlisted_citation_pass_with_integrity_receipt"
+        }
+      ],
+      "vector_hit": false,
+      "hybrid_hit": true,
+      "rank": null,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 36
+    },
+    {
+      "question": "Where is model gateway circuit breaking and canary routing tested?",
+      "expected_symbols": [
+        {
+          "file": "tests/test_model_gateway.py",
+          "name": "test_canary_assignment_is_deterministic_and_high_risk_is_excluded"
+        }
+      ],
+      "vector_hit": true,
+      "hybrid_hit": true,
+      "rank": 1,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 40
+    },
+    {
+      "question": "Where is conformal uncertainty calibration tested?",
+      "expected_symbols": [
+        {
+          "file": "tests/test_uncertainty.py",
+          "name": "test_mondrian_calibrator_is_reproducible_integrity_bound_and_route_aware"
+        }
+      ],
+      "vector_hit": false,
+      "hybrid_hit": true,
+      "rank": null,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 40
+    },
+    {
+      "question": "Where are service API endpoints and authentication hardened and tested?",
+      "expected_symbols": [
+        {
+          "file": "tests/test_service_hardening.py",
+          "name": "test_service"
+        }
+      ],
+      "vector_hit": false,
+      "hybrid_hit": false,
+      "rank": null,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 20
+    },
+    {
+      "question": "Where is evidence quality adjudication tested?",
+      "expected_symbols": [
+        {
+          "file": "tests/test_evidence_quality.py",
+          "name": "test_evidence_quality"
+        }
+      ],
+      "vector_hit": false,
+      "hybrid_hit": true,
+      "rank": null,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 38
+    },
+    {
+      "question": "Where is the CodeAgent software engineering execution tested?",
+      "expected_symbols": [
+        {
+          "file": "tests/test_code_agent.py",
+          "name": "test_code_agent"
+        }
+      ],
+      "vector_hit": false,
+      "hybrid_hit": true,
+      "rank": null,
+      "seeds_retrieved": 2,
+      "graph_adjacent_count": 40
+    }
+  ]
+}

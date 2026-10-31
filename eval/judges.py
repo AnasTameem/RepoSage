@@ -33,7 +33,7 @@ def get_deepeval_judge(
     from deepeval.models import GeminiModel
 
     target_key = api_key or JUDGE_GEMINI_API_KEY or GEMINI_API_KEY or os.getenv("JUDGE_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY", "")
-    target_model = model or JUDGE_MODEL or os.getenv("JUDGE_MODEL", "gemini-2.5-flash")
+    target_model = model or JUDGE_MODEL or os.getenv("JUDGE_MODEL", "gemini-3.5-flash-lite")
 
     if not target_key:
         raise ValueError("Neither JUDGE_GEMINI_API_KEY nor GEMINI_API_KEY is set. An API key is required to initialize the DeepEval judge.")
@@ -55,7 +55,7 @@ def get_ragas_judge(
     from ragas.llms import LangchainLLMWrapper
 
     target_key = api_key or JUDGE_GEMINI_API_KEY or GEMINI_API_KEY or os.getenv("JUDGE_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY", "")
-    target_model = model or JUDGE_MODEL or os.getenv("JUDGE_MODEL", "gemini-2.5-flash")
+    target_model = model or JUDGE_MODEL or os.getenv("JUDGE_MODEL", "gemini-3.5-flash-lite")
 
     if not target_key:
         raise ValueError("Neither JUDGE_GEMINI_API_KEY nor GEMINI_API_KEY is set. An API key is required to initialize the Ragas judge.")
@@ -79,7 +79,7 @@ def get_ragas_embeddings(
     from ragas.embeddings import LangchainEmbeddingsWrapper
 
     target_key = api_key or JUDGE_GEMINI_API_KEY or GEMINI_API_KEY or os.getenv("JUDGE_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY", "")
-    target_model = model or EVAL_EMBEDDING_MODEL or os.getenv("EVAL_EMBEDDING_MODEL", "models/text-embedding-004")
+    target_model = model or EVAL_EMBEDDING_MODEL or os.getenv("EVAL_EMBEDDING_MODEL", "models/gemini-embedding-001")
 
     if not target_key:
         raise ValueError("Neither JUDGE_GEMINI_API_KEY nor GEMINI_API_KEY is set. An API key is required to initialize Ragas embeddings.")

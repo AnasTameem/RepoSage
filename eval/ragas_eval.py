@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -169,9 +170,12 @@ async def evaluate_dataset(
     logger.info("  Ragas Evaluation Summary")
     logger.info(f"{'='*60}")
     for metric, score in mean_scores.items():
-        bar_len = int(float(score) * 20) if isinstance(score, (float, int)) else 0
+        is_num = isinstance(score, (float, int)) and not math.isnan(score)
+        val = float(score) if is_num else 0.0
+        bar_len = max(0, min(20, int(val * 20)))
         bar = "█" * bar_len + "░" * (20 - bar_len)
-        logger.info(f"  {metric:<35} {bar} {score:.4f}")
+        score_str = f"{score:.4f}" if is_num else "NaN"
+        logger.info(f"  {metric:<35} {bar} {score_str}")
     logger.info(f"  Errors: {errors_count} / {len(golden)}")
     logger.info(f"\nFull report saved to: {output_path}")
 

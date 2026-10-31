@@ -51,9 +51,9 @@ GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 # --- Evaluation & Judge Settings ---
 # Separate judge model family/tier from generation model to avoid self-bias
-JUDGE_MODEL = os.getenv("JUDGE_MODEL", "gemini-2.5-flash")
+JUDGE_MODEL = os.getenv("JUDGE_MODEL", "gemini-3.5-flash-lite")
 JUDGE_GEMINI_API_KEY = os.getenv("JUDGE_GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
-EVAL_EMBEDDING_MODEL = os.getenv("EVAL_EMBEDDING_MODEL", "models/text-embedding-004")
+EVAL_EMBEDDING_MODEL = os.getenv("EVAL_EMBEDDING_MODEL", "models/gemini-embedding-001")
 
 
 # --- Production Retrieval Defaults ---

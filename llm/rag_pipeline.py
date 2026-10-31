@@ -98,6 +98,7 @@ async def retrieve_and_expand(
                 top_seeds=top_seeds,
                 max_hops=max_hops,
                 retriever=retriever,
+                query=effective_query,
             )
         except Exception as exc:
             logger.warning(f"[Pipeline] Neo4j graph expansion skipped: {exc}")
@@ -119,6 +120,7 @@ async def retrieve_and_expand(
     blocks_to_build = expanded if expanded else fallback_blocks
     context_window, retrieved_contexts = build_context_window(
         blocks_to_build,
+        query=effective_query,
         return_chunks=True,
     )
 
